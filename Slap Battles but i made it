@@ -1,0 +1,1919 @@
+local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
+local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Lighting = game:GetService("Lighting")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local Stats = game:GetService("Stats")
+local LocalPlayer = Players.LocalPlayer
+
+--------------------------------------------------------------------
+-- HELPERS
+--------------------------------------------------------------------
+local MAX = 500
+local Busy = false
+local Running = false
+local Cancelled = false
+local AutoId = 0
+local HoldTime = 0.6
+local Delay = 0.05
+
+local function GetChar() return LocalPlayer.Character end
+local function GetRoot()
+    local c = GetChar()
+    return c and c:FindFirstChild("HumanoidRootPart")
+end
+local function GetHum()
+    local c = GetChar()
+    return c and c:FindFirstChildOfClass("Humanoid")
+end
+-- the Candies value can sit directly on the player or inside leaderstats / another folder
+local CandyValueObj
+local function GetCandyValueObject()
+    if CandyValueObj and CandyValueObj.Parent then return CandyValueObj end
+    local v = LocalPlayer:FindFirstChild("Candies")
+    if not v then
+        local ls = LocalPlayer:FindFirstChild("leaderstats")
+        v = ls and ls:FindFirstChild("Candies")
+    end
+    if not v then v = LocalPlayer:FindFirstChild("Candies", true) end
+    if v and v:IsA("ValueBase") then CandyValueObj = v return v end
+    return nil
+end
+local function GetCandyValue()
+    local v = GetCandyValueObject()
+    return v and v.Value or 0
+end
+
+local function IsCandyName(name)
+    name = name:lower()
+    return name:find("candy") ~= nil or name:find("corn") ~= nil
+end
+
+-- finds every candy under workspace.Candies (parts, or parts inside candy models),
+-- nearest to you first
+local function GetCandies()
+    local Folder = workspace:FindFirstChild("Candies")
+    local list = {}
+    if not Folder then return list end
+
+    -- every direct child of workspace.Candies is a candy, whatever its name or class
+    -- (the game sends the child itself in its collect event). Models/folders use their
+    -- main part, or the first part found inside.
+    for _, child in ipairs(Folder:GetChildren()) do
+        local part
+        if child:IsA("BasePart") then
+            part = child
+        elseif child:IsA("Model") then
+            part = child.PrimaryPart or child:FindFirstChildWhichIsA("BasePart", true)
+        else
+            part = child:FindFirstChildWhichIsA("BasePart", true)
+        end
+        if part then table.insert(list, part) end
+    end
+
+    local root = GetRoot()
+    if root then
+        local pos = root.Position
+        table.sort(list, function(a, b)
+            return (a.Position - pos).Magnitude < (b.Position - pos).Magnitude
+        end)
+    end
+    return list
+end
+local function TouchWithAllParts(Target)
+    local char = GetChar()
+    if not (char and firetouchinterest) then return end
+    for _, part in char:GetDescendants() do
+        if part:IsA("BasePart") and Target:IsDescendantOf(workspace) then
+            firetouchinterest(part, Target, 0)
+            firetouchinterest(part, Target, 1)
+        end
+    end
+end
+local function Collected(Candy, before)
+    return (not Candy:IsDescendantOf(workspace)) or GetCandyValue() > before
+end
+
+-- Obsidian labels use :SetText, this wrapper keeps the old  label:Set("text")  style
+local function Label(group, text)
+    local l = group:AddLabel(text, true)
+    return {
+        Set = function(_, t) pcall(function() l:SetText(t) end) end,
+    }
+end
+
+local function Notify(title, text, time)
+    pcall(function()
+        Library:Notify({ Title = title, Description = text, Time = time or 3 })
+    end)
+end
+
+--------------------------------------------------------------------
+-- CANDY COLLECT (teleport)
+--------------------------------------------------------------------
+local function TeleportToCandy(Candy)
+    local before = GetCandyValue()
+    local t = os.clock()
+    while os.clock() - t < HoldTime do
+        local Root = GetRoot()
+        if Cancelled or not Root then return false end
+        if GetCandyValue() >= MAX then return false end
+        if Collected(Candy, before) then return true end
+        Root.CFrame = Candy.CFrame
+        Root.AssemblyLinearVelocity = Vector3.zero
+        TouchWithAllParts(Candy)
+        task.wait(0.05)
+    end
+    return Collected(Candy, before)
+end
+
+local Status
+local function UpdateStatus(extra)
+    if Status then
+        local txt = "Candy Corn: " .. GetCandyValue() .. " / " .. MAX
+        if extra then txt = txt .. " | " .. extra end
+        Status:Set(txt)
+    end
+end
+
+local function CollectAll()
+    if Busy then return 0 end
+    Busy = true
+    Cancelled = false
+    local startValue = GetCandyValue()
+    local Root = GetRoot()
+    local origin = Root and Root.CFrame
+
+    local list = GetCandies()
+    if #list == 0 then
+        UpdateStatus("no candies found")
+    end
+    for i, Candy in ipairs(list) do
+        if Cancelled or GetCandyValue() >= MAX or not GetRoot() then break end
+        if Candy:IsDescendantOf(workspace) then
+            UpdateStatus(i .. " / " .. #list)
+            TeleportToCandy(Candy)
+        end
+        task.wait(Delay)
+    end
+
+    local R = GetRoot()
+    if R and origin then
+        R.CFrame = origin
+        R.AssemblyLinearVelocity = Vector3.zero
+    end
+    UpdateStatus()
+    Busy = false
+    return GetCandyValue() - startValue
+end
+
+--------------------------------------------------------------------
+-- WINDOW
+--------------------------------------------------------------------
+local Window = Library:CreateWindow({
+    Title = "Slap Battles but i made it",
+    Footer = "Obsidian UI",
+    NotifySide = "Right",
+    ShowCustomCursor = false,
+})
+Library.ToggleKeybind = Enum.KeyCode.RightShift
+
+local Tabs = {
+    Candies = Window:AddTab("Candies", "candy"),
+    Player = Window:AddTab("Player", "user"),
+    Hitbox = Window:AddTab("Hitbox", "crosshair"),
+    Visuals = Window:AddTab("Visuals", "eye"),
+    AntiAfk = Window:AddTab("Anti AFK", "clock"),
+    SlapFarm = Window:AddTab("Slap Farm", "hand"),
+    Safe = Window:AddTab("Safe Spot", "shield"),
+    Teleports = Window:AddTab("Teleports", "map-pin"),
+    Badge = Window:AddTab("Badge Farm", "award"),
+    Opt = Window:AddTab("Optimization", "zap"),
+    Settings = Window:AddTab("Settings", "settings"),
+    Credits = Window:AddTab("Credits", "heart"),
+}
+
+--------------------------------------------------------------------
+-- TAB: CANDIES
+--------------------------------------------------------------------
+local CandyBox = Tabs.Candies:AddLeftGroupbox("Candy Corn")
+Status = Label(CandyBox, "Candy Corn: " .. GetCandyValue() .. " / " .. MAX)
+
+CandyBox:AddSlider("HoldTime", {
+    Text = "Hold time per candy (s)", Default = 0.6, Min = 0.1, Max = 5, Rounding = 1,
+    Callback = function(v) HoldTime = v end,
+})
+CandyBox:AddSlider("Delay", {
+    Text = "Delay between candies (s)", Default = 0.05, Min = 0, Max = 1, Rounding = 2,
+    Callback = function(v) Delay = v end,
+})
+CandyBox:AddButton({
+    Text = "Collect all candies once",
+    Func = function()
+        task.spawn(function()
+            local gained = CollectAll()
+            Notify("Slap Battles but i made it", "Registered +" .. gained)
+        end)
+    end,
+})
+CandyBox:AddButton({
+    Text = "STOP (cancel now)",
+    Func = function()
+        Cancelled = true
+        -- also switch off auto collect so it doesn't start again right away
+        pcall(function() Library.Toggles.AutoCollect:SetValue(false) end)
+    end,
+})
+CandyBox:AddToggle("AutoCollect", {
+    Text = "Auto collect candies", Default = false,
+    Callback = function(Value)
+        Running = Value
+        AutoId += 1
+        local myId = AutoId
+        if not Value then Cancelled = true return end
+        task.spawn(function()
+            while Running and myId == AutoId do
+                if GetCandyValue() < MAX then
+                    CollectAll()
+                else
+                    UpdateStatus("cap reached")
+                end
+                task.wait(0.5)
+            end
+        end)
+    end,
+})
+CandyBox:AddButton({
+    Text = "Print candy info (console)",
+    Func = function()
+        local folder = workspace:FindFirstChild("Candies")
+        print("[Candies] folder:", folder and folder:GetFullName() or "NOT FOUND")
+        if folder then
+            local kids = folder:GetChildren()
+            print("[Candies] children:", #kids, "| usable candies:", #GetCandies())
+            for i, c in ipairs(kids) do
+                if i > 15 then print("  ...") break end
+                print(string.format("  %d. %s (%s)", i, c.Name, c.ClassName))
+            end
+        end
+        Notify("Candies", "Info printed in the console (F9).", 3)
+    end,
+})
+CandyBox:AddSlider("CandyCap", {
+    Text = "Stop at this many candies", Default = 500, Min = 1, Max = 5000, Rounding = 0,
+    Callback = function(v) MAX = v UpdateStatus() end,
+})
+
+-- keeps the counter in sync, also when the value object is created late or replaced
+task.spawn(function()
+    local watched
+    while true do
+        local v = GetCandyValueObject()
+        if v and v ~= watched then
+            watched = v
+            v.Changed:Connect(function() UpdateStatus() end)
+            UpdateStatus()
+        end
+        task.wait(1)
+    end
+end)
+
+--------------------------------------------------------------------
+-- TAB: PLAYER
+--------------------------------------------------------------------
+local PlayerBox = Tabs.Player:AddLeftGroupbox("Movement")
+local PlayerBox2 = Tabs.Player:AddRightGroupbox("Misc")
+
+local Defaults = { WalkSpeed = 16, JumpPower = 50, Gravity = workspace.Gravity, HipHeight = 0, FOV = 70 }
+do
+    local hum = GetHum()
+    if hum then
+        Defaults.WalkSpeed = hum.WalkSpeed
+        Defaults.JumpPower = hum.JumpPower
+        Defaults.HipHeight = hum.HipHeight
+    end
+    if workspace.CurrentCamera then Defaults.FOV = workspace.CurrentCamera.FieldOfView end
+end
+
+local Custom = {}
+local SliderIds = { "WalkSpeed", "JumpPower", "Gravity", "HipHeight", "FOV" }
+
+PlayerBox:AddSlider("WalkSpeed", {
+    Text = "Walk speed", Default = math.clamp(Defaults.WalkSpeed, 0, 300), Min = 0, Max = 300, Rounding = 0,
+    Callback = function(v) Custom.WalkSpeed = v end,
+})
+PlayerBox:AddSlider("JumpPower", {
+    Text = "Jump power", Default = math.clamp(Defaults.JumpPower, 0, 500), Min = 0, Max = 500, Rounding = 0,
+    Callback = function(v) Custom.JumpPower = v end,
+})
+PlayerBox:AddSlider("Gravity", {
+    Text = "Gravity", Default = math.clamp(math.floor(Defaults.Gravity), 0, 400), Min = 0, Max = 400, Rounding = 0,
+    Callback = function(v) Custom.Gravity = v end,
+})
+PlayerBox:AddSlider("HipHeight", {
+    Text = "Hip height", Default = math.clamp(Defaults.HipHeight, 0, 50), Min = 0, Max = 50, Rounding = 1,
+    Callback = function(v) Custom.HipHeight = v end,
+})
+PlayerBox:AddSlider("FOV", {
+    Text = "Field of view", Default = math.clamp(Defaults.FOV, 30, 120), Min = 30, Max = 120, Rounding = 0,
+    Callback = function(v) Custom.FOV = v end,
+})
+
+RunService.Heartbeat:Connect(function()
+    local hum = GetHum()
+    if hum then
+        if Custom.WalkSpeed then hum.WalkSpeed = Custom.WalkSpeed end
+        if Custom.JumpPower then
+            hum.UseJumpPower = true
+            hum.JumpPower = Custom.JumpPower
+        end
+        if Custom.HipHeight then hum.HipHeight = Custom.HipHeight end
+    end
+    if Custom.Gravity then workspace.Gravity = Custom.Gravity end
+    local cam = workspace.CurrentCamera
+    if cam and Custom.FOV then cam.FieldOfView = Custom.FOV end
+end)
+
+PlayerBox2:AddToggle("InfJump", {
+    Text = "Infinite jump", Default = false,
+    Callback = function(Value) _G.__InfJump = Value end,
+})
+UserInputService.JumpRequest:Connect(function()
+    if _G.__InfJump then
+        local hum = GetHum()
+        if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+    end
+end)
+
+local Noclip = false
+PlayerBox2:AddToggle("Noclip", {
+    Text = "Noclip", Default = false,
+    Callback = function(Value) Noclip = Value end,
+})
+
+-- shared flag so tweens can also noclip
+local TweenNoclip = false
+RunService.Stepped:Connect(function()
+    if not (Noclip or TweenNoclip) then return end
+    local char = GetChar()
+    if not char then return end
+    for _, p in char:GetDescendants() do
+        if p:IsA("BasePart") then p.CanCollide = false end
+    end
+end)
+
+PlayerBox2:AddButton({
+    Text = "Reset to defaults",
+    Func = function()
+        local hum = GetHum()
+        if hum then
+            hum.WalkSpeed = Defaults.WalkSpeed
+            hum.JumpPower = Defaults.JumpPower
+            hum.HipHeight = Defaults.HipHeight
+        end
+        workspace.Gravity = Defaults.Gravity
+        if workspace.CurrentCamera then workspace.CurrentCamera.FieldOfView = Defaults.FOV end
+        local o = Library.Options
+        o.WalkSpeed:SetValue(math.clamp(Defaults.WalkSpeed, 0, 300))
+        o.JumpPower:SetValue(math.clamp(Defaults.JumpPower, 0, 500))
+        o.Gravity:SetValue(math.clamp(math.floor(Defaults.Gravity), 0, 400))
+        o.HipHeight:SetValue(math.clamp(Defaults.HipHeight, 0, 50))
+        o.FOV:SetValue(math.clamp(Defaults.FOV, 30, 120))
+        task.defer(function() for k in Custom do Custom[k] = nil end end)
+    end,
+})
+
+--------------------------------------------------------------------
+-- TAB: HITBOX
+--------------------------------------------------------------------
+local HB = {
+    On = false,
+    Size = 10,
+    Transparency = 0.5,
+    Color = Color3.fromRGB(255, 60, 60),
+    TeamCheck = false,
+    NPCs = false,
+    MaxDistance = 0,            -- 0 = no limit
+    Parts = { "Head" },
+}
+
+-- every group lists R15 and R6 names, only the ones that exist get used
+local PartGroups = {
+    ["Head"] = { "Head" },
+    ["Torso"] = { "UpperTorso", "Torso" },
+    ["HumanoidRootPart"] = { "HumanoidRootPart" },
+    ["Arms"] = { "LeftUpperArm", "RightUpperArm", "Left Arm", "Right Arm" },
+    ["Legs"] = { "LeftUpperLeg", "RightUpperLeg", "Left Leg", "Right Leg" },
+}
+
+local Originals = setmetatable({}, { __mode = "k" })  -- [part] = saved properties
+local Affected = setmetatable({}, { __mode = "k" })   -- [model] = true
+local NPCModels = {}                                  -- [model] = true
+local NPCConns = {}
+
+local function RestorePart(part)
+    local o = Originals[part]
+    if not o then return end
+    Originals[part] = nil
+    if part.Parent then
+        pcall(function()
+            part.Size = o.Size
+            part.Transparency = o.Transparency
+            part.Color = o.Color
+            part.CanCollide = o.CanCollide
+            part.CanQuery = o.CanQuery
+            part.CanTouch = o.CanTouch
+        end)
+    end
+end
+
+local function RestoreModel(model)
+    for part, o in pairs(Originals) do
+        if o.Model == model then RestorePart(part) end
+    end
+    Affected[model] = nil
+end
+
+local function RestoreAll()
+    for part in pairs(Originals) do RestorePart(part) end
+    table.clear(Affected)
+end
+
+local function ShouldAffect(plr)
+    if plr == LocalPlayer then return false end
+    if HB.TeamCheck and plr.Team ~= nil and plr.Team == LocalPlayer.Team then return false end
+    return true
+end
+
+local function InRange(model)
+    if HB.MaxDistance <= 0 then return true end
+    local mine = GetRoot()
+    local theirs = model:FindFirstChild("HumanoidRootPart")
+    if not (mine and theirs) then return true end
+    return (theirs.Position - mine.Position).Magnitude <= HB.MaxDistance
+end
+
+local function ApplyToPart(part, model)
+    if not Originals[part] then
+        Originals[part] = {
+            Model = model,
+            Size = part.Size, Transparency = part.Transparency, Color = part.Color,
+            CanCollide = part.CanCollide, CanQuery = part.CanQuery, CanTouch = part.CanTouch,
+        }
+    end
+    local size = Vector3.new(HB.Size, HB.Size, HB.Size)
+    if part.Size ~= size then part.Size = size end
+    part.Transparency = HB.Transparency
+    part.Color = HB.Color
+    part.CanCollide = false
+    part.CanQuery = true
+    part.CanTouch = true
+end
+
+local function ApplyToModel(model)
+    local hum = model:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 or not InRange(model) then
+        if Affected[model] then RestoreModel(model) end
+        return
+    end
+    Affected[model] = true
+    for _, group in ipairs(HB.Parts) do
+        for _, name in ipairs(PartGroups[group] or {}) do
+            local part = model:FindFirstChild(name)
+            if part and part:IsA("BasePart") then pcall(ApplyToPart, part, model) end
+        end
+    end
+end
+
+local function NPCFromHumanoid(inst)
+    if not inst:IsA("Humanoid") then return nil end
+    local m = inst.Parent
+    if m and m:IsA("Model") and m ~= GetChar() and not Players:GetPlayerFromCharacter(m) then
+        return m
+    end
+end
+
+local function StopNPCTracking()
+    for _, c in ipairs(NPCConns) do c:Disconnect() end
+    table.clear(NPCConns)
+    for model in pairs(NPCModels) do
+        RestoreModel(model)
+        NPCModels[model] = nil
+    end
+end
+
+local function StartNPCTracking()
+    StopNPCTracking()
+    for _, inst in ipairs(workspace:GetDescendants()) do
+        local m = NPCFromHumanoid(inst)
+        if m then NPCModels[m] = true end
+    end
+    table.insert(NPCConns, workspace.DescendantAdded:Connect(function(inst)
+        local m = NPCFromHumanoid(inst)
+        if m then NPCModels[m] = true end
+    end))
+    table.insert(NPCConns, workspace.DescendantRemoving:Connect(function(inst)
+        if inst:IsA("Humanoid") and inst.Parent then NPCModels[inst.Parent] = nil end
+    end))
+end
+
+RunService.Heartbeat:Connect(function()
+    if not HB.On then return end
+    for _, plr in ipairs(Players:GetPlayers()) do
+        local char = plr.Character
+        if plr ~= LocalPlayer and char then
+            if ShouldAffect(plr) then
+                ApplyToModel(char)
+            elseif Affected[char] then
+                RestoreModel(char)
+            end
+        end
+    end
+    if HB.NPCs then
+        for model in pairs(NPCModels) do
+            if model.Parent then ApplyToModel(model) else NPCModels[model] = nil end
+        end
+    end
+end)
+
+-- big parts collide with the floor on YOUR client and pin the player in place,
+-- so every part of an affected character has collisions turned off
+RunService.Stepped:Connect(function()
+    if not HB.On then return end
+    for model in pairs(Affected) do
+        if model.Parent then
+            for _, p in ipairs(model:GetChildren()) do
+                if p:IsA("BasePart") and p.CanCollide then p.CanCollide = false end
+            end
+        else
+            Affected[model] = nil
+        end
+    end
+end)
+
+local HitboxBox = Tabs.Hitbox:AddLeftGroupbox("Hitbox")
+local LookBox = Tabs.Hitbox:AddRightGroupbox("Look")
+local TargetBox = Tabs.Hitbox:AddRightGroupbox("Targets")
+
+HitboxBox:AddToggle("HitboxOn", {
+    Text = "Expand hitboxes", Default = false,
+    Callback = function(Value)
+        HB.On = Value
+        if not Value then RestoreAll() end
+    end,
+})
+
+HitboxBox:AddDropdown("HitboxParts", {
+    Text = "Body parts to expand",
+    Values = { "Head", "Torso", "HumanoidRootPart", "Arms", "Legs" },
+    Default = { "Head" }, Multi = true,
+    Callback = function(Value)
+        local list = {}
+        if type(Value) == "table" then
+            for name, on in pairs(Value) do
+                if on == true then table.insert(list, name) end
+            end
+        elseif type(Value) == "string" then
+            list = { Value }
+        end
+        HB.Parts = list
+        RestoreAll()
+    end,
+})
+
+HitboxBox:AddSlider("HitboxSize", {
+    Text = "Hitbox size", Default = 10, Min = 2, Max = 50, Rounding = 0,
+    Callback = function(v) HB.Size = v end,
+})
+
+HitboxBox:AddButton({ Text = "Restore all hitboxes now", Func = RestoreAll })
+local HitboxStatus = Label(HitboxBox, "Hitboxes active: 0")
+
+LookBox:AddSlider("HitboxTransparency", {
+    Text = "Transparency (0 = fully visible)", Default = 0.5, Min = 0, Max = 1, Rounding = 2,
+    Callback = function(v) HB.Transparency = v end,
+})
+LookBox:AddLabel("Hitbox color"):AddColorPicker("HitboxColor", {
+    Default = Color3.fromRGB(255, 60, 60), Title = "Hitbox color",
+    Callback = function(c) HB.Color = c end,
+})
+
+TargetBox:AddToggle("HitboxTeamCheck", {
+    Text = "Team check (skip teammates)", Default = false,
+    Callback = function(Value)
+        HB.TeamCheck = Value
+        RestoreAll()
+    end,
+})
+TargetBox:AddToggle("HitboxNPCs", {
+    Text = "Include NPCs / enemies", Default = false,
+    Callback = function(Value)
+        HB.NPCs = Value
+        if Value then StartNPCTracking() else StopNPCTracking() end
+    end,
+})
+TargetBox:AddSlider("HitboxDistance", {
+    Text = "Max distance (0 = no limit)", Default = 0, Min = 0, Max = 1000, Rounding = 0,
+    Callback = function(v) HB.MaxDistance = v end,
+})
+
+task.spawn(function()
+    local last = -1
+    while true do
+        task.wait(1)
+        local n = 0
+        for model in pairs(Affected) do
+            if model.Parent then n += 1 else Affected[model] = nil end
+        end
+        for part in pairs(Originals) do
+            if not part.Parent then Originals[part] = nil end
+        end
+        if n ~= last then
+            last = n
+            HitboxStatus:Set("Hitboxes active: " .. n)
+        end
+    end
+end)
+
+--------------------------------------------------------------------
+-- TAB: HIGHLIGHT (highlights every player)
+--------------------------------------------------------------------
+local ESP = {
+    On = false,
+    Fill = Color3.fromRGB(255, 60, 60),
+    Outline = Color3.fromRGB(255, 255, 255),
+    FillTransparency = 0.5,
+    OutlineTransparency = 0,
+    TeamCheck = false,
+    UseTeamColor = false,
+    AlwaysOnTop = true,
+}
+
+local ESPFolder = Instance.new("Folder")
+ESPFolder.Name = "PlayerHighlights"
+do
+    local ok = pcall(function()
+        ESPFolder.Parent = (gethui and gethui()) or game:GetService("CoreGui")
+    end)
+    if not ok then ESPFolder.Parent = workspace end
+end
+
+local ESPObjects = {}   -- [player] = Highlight
+
+local function ESPRemove(plr)
+    local h = ESPObjects[plr]
+    if h then
+        pcall(function() h:Destroy() end)
+        ESPObjects[plr] = nil
+    end
+end
+
+local function ESPUpdate(plr)
+    if plr == LocalPlayer then return end
+    local char = plr.Character
+    local hide = (not ESP.On) or (not char) or (not char.Parent)
+    if not hide and ESP.TeamCheck and plr.Team ~= nil and plr.Team == LocalPlayer.Team then hide = true end
+    if hide then
+        ESPRemove(plr)
+        return
+    end
+
+    local h = ESPObjects[plr]
+    if not h or not h.Parent then
+        h = Instance.new("Highlight")
+        h.Name = plr.Name
+        h.Parent = ESPFolder
+        ESPObjects[plr] = h
+    end
+    h.Adornee = char
+    local fill, outline = ESP.Fill, ESP.Outline
+    if ESP.UseTeamColor and plr.Team then
+        fill = plr.TeamColor.Color
+        outline = plr.TeamColor.Color
+    end
+    h.FillColor = fill
+    h.OutlineColor = outline
+    h.FillTransparency = ESP.FillTransparency
+    h.OutlineTransparency = ESP.OutlineTransparency
+    h.DepthMode = ESP.AlwaysOnTop and Enum.HighlightDepthMode.AlwaysOnTop or Enum.HighlightDepthMode.Occluded
+end
+
+local function ESPRefresh()
+    for _, plr in ipairs(Players:GetPlayers()) do ESPUpdate(plr) end
+end
+
+local function ESPHook(plr)
+    plr.CharacterAdded:Connect(function() task.defer(ESPUpdate, plr) end)
+    plr.CharacterRemoving:Connect(function() ESPRemove(plr) end)
+end
+for _, plr in ipairs(Players:GetPlayers()) do ESPHook(plr) end
+Players.PlayerAdded:Connect(ESPHook)
+Players.PlayerRemoving:Connect(ESPRemove)
+
+-- catches team changes and respawns that happened while it was running
+task.spawn(function()
+    while true do
+        task.wait(1)
+        if ESP.On then ESPRefresh() end
+    end
+end)
+
+local ESPBox = Tabs.Visuals:AddLeftGroupbox("Player highlight")
+local ESPLook = Tabs.Visuals:AddRightGroupbox("Highlight look")
+
+ESPBox:AddToggle("ESPOn", {
+    Text = "Highlight all players", Default = false,
+    Callback = function(Value)
+        ESP.On = Value
+        ESPRefresh()
+    end,
+})
+ESPBox:AddToggle("ESPTeamCheck", {
+    Text = "Team check (skip teammates)", Default = false,
+    Callback = function(Value) ESP.TeamCheck = Value ESPRefresh() end,
+})
+ESPBox:AddToggle("ESPTeamColor", {
+    Text = "Use team colors", Default = false,
+    Callback = function(Value) ESP.UseTeamColor = Value ESPRefresh() end,
+})
+ESPBox:AddToggle("ESPOnTop", {
+    Text = "Visible through walls", Default = true,
+    Callback = function(Value) ESP.AlwaysOnTop = Value ESPRefresh() end,
+})
+ESPBox:AddLabel("Roblox only draws up to 31 highlights at once.", true)
+
+ESPLook:AddLabel("Fill color"):AddColorPicker("ESPFill", {
+    Default = ESP.Fill, Title = "Fill color",
+    Callback = function(c) ESP.Fill = c ESPRefresh() end,
+})
+ESPLook:AddLabel("Outline color"):AddColorPicker("ESPOutline", {
+    Default = ESP.Outline, Title = "Outline color",
+    Callback = function(c) ESP.Outline = c ESPRefresh() end,
+})
+ESPLook:AddSlider("ESPFillT", {
+    Text = "Fill transparency", Default = 0.5, Min = 0, Max = 1, Rounding = 2,
+    Callback = function(v) ESP.FillTransparency = v ESPRefresh() end,
+})
+ESPLook:AddSlider("ESPOutlineT", {
+    Text = "Outline transparency", Default = 0, Min = 0, Max = 1, Rounding = 2,
+    Callback = function(v) ESP.OutlineTransparency = v ESPRefresh() end,
+})
+
+--------------------------------------------------------------------
+-- VISUALS: FAKE SLAP COUNT (client side only, the server never sees it)
+-- Only changes the text of the label inside PlayerGui.SlapCount.
+--------------------------------------------------------------------
+local FakeSlaps = { On = false, Value = 0 }
+local SlapLabel
+
+local function FindSlapLabel()
+    local gui = LocalPlayer:FindFirstChild("PlayerGui")
+    local sc = gui and gui:FindFirstChild("SlapCount")
+    if not sc then return nil end
+    -- the game's LocalScript sits inside the label (script.Parent.Text = Slaps.Value)
+    for _, d in ipairs(sc:GetDescendants()) do
+        if d:IsA("LocalScript") and d.Parent
+            and (d.Parent:IsA("TextLabel") or d.Parent:IsA("TextButton") or d.Parent:IsA("TextBox")) then
+            return d.Parent
+        end
+    end
+    for _, d in ipairs(sc:GetDescendants()) do
+        if d:IsA("TextLabel") then return d end
+    end
+end
+
+local function RealSlaps()
+    local ls = LocalPlayer:FindFirstChild("leaderstats")
+    local s = ls and ls:FindFirstChild("Slaps")
+    return s and s.Value or 0
+end
+
+local function FakeText()
+    return string.format("%.0f", FakeSlaps.Value)
+end
+
+-- runs every frame so it overrides the game's own Slaps.Changed update
+RunService.RenderStepped:Connect(function()
+    if not FakeSlaps.On then return end
+    if not SlapLabel or not SlapLabel.Parent then SlapLabel = FindSlapLabel() end
+    if SlapLabel then
+        local txt = FakeText()
+        if SlapLabel.Text ~= txt then SlapLabel.Text = txt end
+    end
+end)
+
+local SlapBox = Tabs.Visuals:AddLeftGroupbox("Fake slap count (visual only)")
+
+SlapBox:AddInput("FakeSlapValue", {
+    Text = "Slaps to show", Default = "0", Numeric = true, Finished = true,
+    Placeholder = "e.g. 999999",
+    Callback = function(Value)
+        local n = tonumber(Value)
+        if n then FakeSlaps.Value = math.max(math.floor(n), 0) end
+    end,
+})
+
+SlapBox:AddToggle("FakeSlapOn", {
+    Text = "Show fake slap count", Default = false,
+    Callback = function(Value)
+        FakeSlaps.On = Value
+        SlapLabel = FindSlapLabel()
+        if not SlapLabel then
+            Notify("Visuals", "SlapCount label not found.")
+            return
+        end
+        if not Value then
+            -- put the real number back
+            SlapLabel.Text = "" .. RealSlaps()
+        end
+    end,
+})
+
+SlapBox:AddButton({
+    Text = "Use my real slaps as the starting number",
+    Func = function()
+        FakeSlaps.Value = RealSlaps()
+        pcall(function() Library.Options.FakeSlapValue:SetValue(tostring(FakeSlaps.Value)) end)
+    end,
+})
+SlapBox:AddLabel("Only your screen changes. The real Slaps value on the server stays the same.", true)
+
+--------------------------------------------------------------------
+-- VISUALS: NAMETAG CHANGER (client side only, other players still see your real name)
+-- Changes the Humanoid display name and any overhead billboard text that shows your name.
+--------------------------------------------------------------------
+local Nametag = { On = false, Name = "" }
+local NameSaved = setmetatable({}, { __mode = "k" })   -- [textObject] = original text
+
+local function IsOwnName(text)
+    return text == LocalPlayer.Name
+        or text == LocalPlayer.DisplayName
+        or text == "@" .. LocalPlayer.Name
+end
+
+local function ApplyNametag()
+    if Nametag.Name == "" then return end
+    local char = GetChar()
+    if not char then return end
+
+    local hum = GetHum()
+    if hum and hum.DisplayName ~= Nametag.Name then
+        pcall(function() hum.DisplayName = Nametag.Name end)
+    end
+
+    for _, d in ipairs(char:GetDescendants()) do
+        if (d:IsA("TextLabel") or d:IsA("TextBox") or d:IsA("TextButton"))
+            and d:FindFirstAncestorOfClass("BillboardGui") then
+            if NameSaved[d] == nil and IsOwnName(d.Text) then
+                NameSaved[d] = d.Text
+            end
+            if NameSaved[d] ~= nil and d.Text ~= Nametag.Name then
+                d.Text = Nametag.Name
+            end
+        end
+    end
+end
+
+local function RestoreNametag()
+    for obj, text in pairs(NameSaved) do
+        if obj.Parent then pcall(function() obj.Text = text end) end
+        NameSaved[obj] = nil
+    end
+    local hum = GetHum()
+    if hum then pcall(function() hum.DisplayName = LocalPlayer.DisplayName end) end
+end
+
+task.spawn(function()
+    while true do
+        task.wait(0.1)
+        if Nametag.On then pcall(ApplyNametag) end
+    end
+end)
+
+local NameBox = Tabs.Visuals:AddRightGroupbox("Nametag changer (visual only)")
+
+NameBox:AddInput("NametagText", {
+    Text = "Name to show", Default = "", Placeholder = "type a name",
+    Finished = true,
+    Callback = function(Value)
+        Nametag.Name = Value or ""
+        if Nametag.On and Nametag.Name == "" then RestoreNametag() end
+    end,
+})
+NameBox:AddToggle("NametagOn", {
+    Text = "Change my nametag", Default = false,
+    Callback = function(Value)
+        Nametag.On = Value
+        if not Value then RestoreNametag() end
+    end,
+})
+NameBox:AddLabel("Only you see the new name. Other players still see your real one.", true)
+
+--------------------------------------------------------------------
+-- TAB: ANTI AFK
+--------------------------------------------------------------------
+local AfkBox = Tabs.AntiAfk:AddLeftGroupbox("Anti AFK")
+local VirtualUser = game:GetService("VirtualUser")
+
+local AntiAfkConn
+local AfkCount = 0
+local AfkStatus = Label(AfkBox, "Anti AFK: off")
+
+local function EnableAntiAfk()
+    if AntiAfkConn then return end
+    AntiAfkConn = LocalPlayer.Idled:Connect(function()
+        pcall(function()
+            VirtualUser:CaptureController()
+            VirtualUser:ClickButton2(Vector2.new())
+        end)
+        AfkCount += 1
+        AfkStatus:Set("Anti AFK: on | idle resets: " .. AfkCount)
+    end)
+    AfkStatus:Set("Anti AFK: on | idle resets: " .. AfkCount)
+end
+
+local function DisableAntiAfk()
+    if AntiAfkConn then
+        AntiAfkConn:Disconnect()
+        AntiAfkConn = nil
+    end
+    AfkStatus:Set("Anti AFK: off")
+end
+
+AfkBox:AddToggle("AntiAfk", {
+    Text = "Anti AFK (don't get kicked after 20 min idle)", Default = false,
+    Callback = function(Value)
+        if Value then EnableAntiAfk() else DisableAntiAfk() end
+    end,
+})
+
+--------------------------------------------------------------------
+-- TAB: SLAP FARM
+--------------------------------------------------------------------
+local FarmBox = Tabs.SlapFarm:AddLeftGroupbox("Slapple farm")
+local FarmOpts = Tabs.SlapFarm:AddRightGroupbox("Options")
+
+local FarmMethod = "Teleport"
+local TweenSpeed = 60        -- studs per second
+local FarmHold = 0.4
+local FarmReturn = true
+local FarmBusy = false
+local FarmCancelled = false
+local FarmRunning = false
+local FarmAutoId = 0
+local ActiveTween
+local FarmStatus = Label(FarmBox, "Status: idle")
+
+local function Normalize(s) return (s:lower():gsub("[%s_%-]", "")) end
+
+local function FindSlappleIsland()
+    for _, child in ipairs(workspace:GetChildren()) do
+        if Normalize(child.Name) == "slappleisland" then return child end
+    end
+    for _, d in ipairs(workspace:GetDescendants()) do
+        if Normalize(d.Name) == "slappleisland" then return d end
+    end
+end
+
+local function FindSlapples()
+    local island = FindSlappleIsland()
+    if not island then return nil, nil end
+    for _, d in ipairs(island:GetChildren()) do
+        if Normalize(d.Name) == "slapples" then return d, island end
+    end
+    for _, d in ipairs(island:GetDescendants()) do
+        if Normalize(d.Name) == "slapples" then return d, island end
+    end
+    return nil, island
+end
+
+local function GetSlappleList()
+    local folder = FindSlapples()
+    local list = {}
+    if folder then
+        for _, item in ipairs(folder:GetChildren()) do
+            if item:IsA("Model") or item:IsA("BasePart") then table.insert(list, item) end
+        end
+    end
+    return list
+end
+
+local function ItemPosition(item)
+    if item:IsA("Model") then return item:GetPivot().Position end
+    return item.Position
+end
+
+local function ItemParts(item)
+    if item:IsA("BasePart") then return { item } end
+    local list = {}
+    for _, d in ipairs(item:GetDescendants()) do
+        if d:IsA("BasePart") then table.insert(list, d) end
+    end
+    return list
+end
+
+-- triggers every way a pickup can work: click, prompt, touch
+-- (touch is sent from every body part of your character, like the candy collector)
+local function Interact(item)
+    local root = GetRoot()
+    if not root then return end
+    local char = GetChar()
+    local nodes = item:GetDescendants()
+    table.insert(nodes, item)
+    for _, d in ipairs(nodes) do
+        if d:IsA("ClickDetector") and fireclickdetector then
+            pcall(fireclickdetector, d)
+        elseif d:IsA("ProximityPrompt") and fireproximityprompt then
+            pcall(fireproximityprompt, d)
+        elseif d:IsA("BasePart") and firetouchinterest and d.Parent then
+            pcall(function()
+                firetouchinterest(root, d, 0)
+                firetouchinterest(root, d, 1)
+            end)
+            if char then
+                for _, cp in ipairs(char:GetChildren()) do
+                    if cp:IsA("BasePart") and cp ~= root then
+                        pcall(function()
+                            firetouchinterest(cp, d, 0)
+                            firetouchinterest(cp, d, 1)
+                        end)
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function InteractFor(item, seconds)
+    local t = os.clock()
+    repeat
+        if FarmCancelled or not item.Parent then return end
+        Interact(item)
+        task.wait(0.08)
+    until os.clock() - t >= seconds
+end
+
+-- METHOD 1: teleport
+local function FarmTeleport(item)
+    local root = GetRoot()
+    if not root then return end
+    root.CFrame = CFrame.new(ItemPosition(item) + Vector3.new(0, 3, 0))
+    root.AssemblyLinearVelocity = Vector3.zero
+    InteractFor(item, FarmHold)
+end
+
+-- METHOD 2: bring the slapple to my character
+-- Fix: the old version moved the slapple on your client only, so the server never
+-- saw it near you. Now it (1) asks for network ownership so the move replicates,
+-- (2) keeps it pinned on your character every frame, (3) touches it with every
+-- body part, and (4) if it is still there afterwards, puts it back and falls
+-- back to the teleport method so nothing gets skipped.
+local function ClaimOwnership()
+    pcall(function()
+        if sethiddenproperty then
+            sethiddenproperty(LocalPlayer, "SimulationRadius", 1e9)
+            sethiddenproperty(LocalPlayer, "MaximumSimulationRadius", 1e9)
+        end
+    end)
+end
+
+local function FarmBring(item)
+    local root = GetRoot()
+    if not root then return end
+
+    local isModel = item:IsA("Model")
+    local originalPivot = isModel and item:GetPivot() or item.CFrame
+    local parts = ItemParts(item)
+    local saved = {}
+    for _, p in ipairs(parts) do
+        saved[p] = { Anchored = p.Anchored, CanCollide = p.CanCollide }
+        p.CanCollide = false
+        p.CanTouch = true
+        p.Anchored = false
+    end
+
+    ClaimOwnership()
+
+    local t = os.clock()
+    while os.clock() - t < FarmHold do
+        root = GetRoot()
+        if FarmCancelled or not root or not item.Parent then break end
+        ClaimOwnership()
+        local target = root.CFrame
+        if isModel then item:PivotTo(target) else item.CFrame = target end
+        for _, p in ipairs(parts) do
+            if p.Parent then
+                p.AssemblyLinearVelocity = Vector3.zero
+                p.AssemblyAngularVelocity = Vector3.zero
+            end
+        end
+        Interact(item)
+        task.wait(0.03)
+    end
+
+    -- not picked up: put it back and use the reliable method instead
+    if item.Parent and not FarmCancelled then
+        for p, s in pairs(saved) do
+            if p.Parent then
+                p.Anchored = s.Anchored
+                p.CanCollide = s.CanCollide
+            end
+        end
+        if isModel then item:PivotTo(originalPivot) else item.CFrame = originalPivot end
+        FarmTeleport(item)
+    end
+end
+
+-- METHOD 3: tween (speed in studs/second)
+local function FarmTween(item)
+    local root = GetRoot()
+    if not root then return end
+    local target = CFrame.new(ItemPosition(item) + Vector3.new(0, 3, 0))
+    local distance = (root.Position - target.Position).Magnitude
+    local duration = math.max(distance / math.max(TweenSpeed, 1), 0.05)
+
+    TweenNoclip = true
+    ActiveTween = TweenService:Create(root, TweenInfo.new(duration, Enum.EasingStyle.Linear), { CFrame = target })
+    ActiveTween:Play()
+    local t = os.clock()
+    while ActiveTween and ActiveTween.PlaybackState == Enum.PlaybackState.Playing and os.clock() - t < duration + 1 do
+        if FarmCancelled then ActiveTween:Cancel() break end
+        root.AssemblyLinearVelocity = Vector3.zero
+        task.wait()
+    end
+    ActiveTween = nil
+    TweenNoclip = false
+    if not FarmCancelled then InteractFor(item, FarmHold) end
+end
+
+local FarmMethods = {
+    ["Teleport"] = FarmTeleport,
+    ["Bring"] = FarmBring,
+    ["Tween"] = FarmTween,
+}
+
+local function FarmOnce()
+    if FarmBusy then return 0 end
+    FarmBusy = true
+    FarmCancelled = false
+
+    local folder, island = FindSlapples()
+    if not island then
+        FarmStatus:Set("Status: 'Slapple island' not found in workspace")
+        FarmBusy = false
+        return 0
+    end
+    if not folder then
+        FarmStatus:Set("Status: 'Slapples' not found inside Slapple island")
+        FarmBusy = false
+        return 0
+    end
+
+    local root = GetRoot()
+    local origin = root and root.CFrame
+    local fn = FarmMethods[FarmMethod] or FarmTeleport
+    local list = GetSlappleList()
+    local done = 0
+
+    for i, item in ipairs(list) do
+        if FarmCancelled or not GetRoot() then break end
+        if item.Parent then
+            FarmStatus:Set(string.format("Status: %s | slapple %d / %d", FarmMethod, i, #list))
+            fn(item)
+            done += 1
+            task.wait(0.05)
+        end
+    end
+
+    TweenNoclip = false
+    local R = GetRoot()
+    if FarmReturn and R and origin then
+        R.CFrame = origin
+        R.AssemblyLinearVelocity = Vector3.zero
+    end
+    FarmStatus:Set("Status: done (" .. done .. " visited)")
+    FarmBusy = false
+    return done
+end
+
+FarmBox:AddDropdown("FarmMethod", {
+    Text = "Method", Values = { "Teleport", "Bring", "Tween" }, Default = "Teleport", Multi = false,
+    Callback = function(Option) FarmMethod = type(Option) == "table" and Option[1] or Option end,
+})
+FarmBox:AddButton({ Text = "Farm slapples once", Func = function() task.spawn(FarmOnce) end })
+FarmBox:AddButton({
+    Text = "STOP (cancel now)",
+    Func = function()
+        FarmCancelled = true
+        if ActiveTween then pcall(function() ActiveTween:Cancel() end) end
+        TweenNoclip = false
+    end,
+})
+FarmBox:AddToggle("AutoFarm", {
+    Text = "Auto farm slapples", Default = false,
+    Callback = function(Value)
+        FarmRunning = Value
+        FarmAutoId += 1
+        local myId = FarmAutoId
+        if not Value then
+            FarmCancelled = true
+            if ActiveTween then pcall(function() ActiveTween:Cancel() end) end
+            TweenNoclip = false
+            return
+        end
+        task.spawn(function()
+            while FarmRunning and myId == FarmAutoId do
+                FarmOnce()
+                task.wait(1)
+            end
+        end)
+    end,
+})
+
+FarmOpts:AddSlider("TweenSpeed", {
+    Text = "Tween speed (studs/second)", Default = 60, Min = 10, Max = 500, Rounding = 0,
+    Callback = function(v) TweenSpeed = v end,
+})
+FarmOpts:AddSlider("FarmHold", {
+    Text = "Time on each slapple (s)", Default = 0.4, Min = 0.1, Max = 3, Rounding = 1,
+    Callback = function(v) FarmHold = v end,
+})
+FarmOpts:AddToggle("FarmReturn", {
+    Text = "Return to start position when finished", Default = true,
+    Callback = function(Value) FarmReturn = Value end,
+})
+FarmOpts:AddButton({
+    Text = "Print slapple info (console)",
+    Func = function()
+        local folder, island = FindSlapples()
+        print("[SlapFarm] island:", island and island:GetFullName() or "NOT FOUND")
+        print("[SlapFarm] slapples:", folder and folder:GetFullName() or "NOT FOUND")
+        for i, item in ipairs(GetSlappleList()) do
+            local kinds = {}
+            for _, d in ipairs(item:GetDescendants()) do
+                if d:IsA("ClickDetector") or d:IsA("ProximityPrompt") or d:IsA("TouchTransmitter") then
+                    kinds[d.ClassName] = true
+                end
+            end
+            local k = {}
+            for name in pairs(kinds) do table.insert(k, name) end
+            print(string.format("  %d. %s (%s) [%s]", i, item.Name, item.ClassName, table.concat(k, ", ")))
+        end
+        Notify("Slap Farm", "Info printed in the console (F9).", 4)
+    end,
+})
+
+--------------------------------------------------------------------
+-- TAB: SAFE SPOT (far away 1000 x 1000 arena)
+--------------------------------------------------------------------
+local ARENA_SIZE = 1000          -- studs (X and Z)
+local FloorThickness = 10
+local WallHeight = 60
+local WallThickness = 4
+local ArenaDistance = 5000       -- how far from you the arena is built (X and Z)
+local ArenaHeight = 500          -- Y position of the arena floor
+local ArenaTransparency = 0.5
+
+local ArenaFolder
+local ArenaCenter
+local ArenaOrigin                -- where you were when the arena was created
+local SafeReturn                 -- CFrame to go back to
+local OnSafe = false
+local AutoKeep = false
+
+local ArenaBox = Tabs.Safe:AddLeftGroupbox("Arena")
+local TeleBox = Tabs.Safe:AddRightGroupbox("Teleport")
+local SafeStatus = Label(ArenaBox, "Status: no arena created")
+
+local function ArenaExists()
+    return ArenaFolder ~= nil and ArenaFolder.Parent ~= nil
+end
+
+local function MakeArenaPart(name, size, position)
+    local p = Instance.new("Part")
+    p.Name = name
+    p.Size = size
+    p.Position = position
+    p.Anchored = true
+    p.CanCollide = true
+    p.CanTouch = false
+    p.Material = Enum.Material.SmoothPlastic
+    p.Color = Color3.fromRGB(80, 200, 120)
+    p.Transparency = ArenaTransparency
+    p.TopSurface = Enum.SurfaceType.Smooth
+    p.BottomSurface = Enum.SurfaceType.Smooth
+    p.Parent = ArenaFolder
+    return p
+end
+
+local function CreateArena()
+    if ArenaExists() then return end
+    local root = GetRoot()
+    local base = root and root.Position or Vector3.zero
+    ArenaOrigin = Vector3.new(base.X, 0, base.Z)
+    ArenaCenter = ArenaOrigin + Vector3.new(ArenaDistance, ArenaHeight, ArenaDistance)
+
+    ArenaFolder = Instance.new("Folder")
+    ArenaFolder.Name = "SafeArena"
+    ArenaFolder.Parent = workspace
+
+    local c = ArenaCenter
+    local half = ARENA_SIZE / 2
+    local wallY = c.Y + FloorThickness / 2 + WallHeight / 2
+    local offset = half + WallThickness / 2
+
+    MakeArenaPart("Floor", Vector3.new(ARENA_SIZE, FloorThickness, ARENA_SIZE), c)
+    MakeArenaPart("WallN", Vector3.new(ARENA_SIZE + WallThickness * 2, WallHeight, WallThickness),
+        Vector3.new(c.X, wallY, c.Z - offset))
+    MakeArenaPart("WallS", Vector3.new(ARENA_SIZE + WallThickness * 2, WallHeight, WallThickness),
+        Vector3.new(c.X, wallY, c.Z + offset))
+    MakeArenaPart("WallE", Vector3.new(WallThickness, WallHeight, ARENA_SIZE),
+        Vector3.new(c.X + offset, wallY, c.Z))
+    MakeArenaPart("WallW", Vector3.new(WallThickness, WallHeight, ARENA_SIZE),
+        Vector3.new(c.X - offset, wallY, c.Z))
+
+    SafeStatus:Set("Status: arena created (" .. ARENA_SIZE .. "x" .. ARENA_SIZE .. ")")
+end
+
+local function RemoveArena()
+    OnSafe = false
+    if ArenaFolder then pcall(function() ArenaFolder:Destroy() end) end
+    ArenaFolder = nil
+    ArenaCenter = nil
+    SafeStatus:Set("Status: no arena created")
+end
+
+local function ArenaTop()
+    return ArenaCenter + Vector3.new(0, FloorThickness / 2 + 4, 0)
+end
+
+local function IsInArena(root)
+    if not (ArenaExists() and ArenaCenter) then return false end
+    local rel = root.Position - ArenaCenter
+    local limit = ARENA_SIZE / 2 + WallThickness
+    return math.abs(rel.X) <= limit and math.abs(rel.Z) <= limit and rel.Y > 0
+end
+
+-- moves the whole arena (and you, if you're standing on it)
+local function MoveArena(newCenter)
+    if not ArenaExists() then return end
+    local delta = newCenter - ArenaCenter
+    local root = GetRoot()
+    local carry = OnSafe and root and IsInArena(root)
+    for _, p in ipairs(ArenaFolder:GetChildren()) do
+        if p:IsA("BasePart") then p.Position += delta end
+    end
+    ArenaCenter = newCenter
+    if carry then
+        root.CFrame += delta
+        root.AssemblyLinearVelocity = Vector3.zero
+    end
+end
+
+local function GoToSafe()
+    local root = GetRoot()
+    if not root then return end
+    CreateArena()
+    if not IsInArena(root) then SafeReturn = root.CFrame end
+    root.CFrame = CFrame.new(ArenaTop())
+    root.AssemblyLinearVelocity = Vector3.zero
+    OnSafe = true
+    SafeStatus:Set("Status: standing in the safe arena")
+end
+
+local function ReturnFromSafe()
+    local root = GetRoot()
+    OnSafe = false
+    if root and SafeReturn then
+        root.CFrame = SafeReturn
+        root.AssemblyLinearVelocity = Vector3.zero
+        SafeStatus:Set("Status: returned to previous position")
+    end
+end
+
+ArenaBox:AddToggle("SafeCreate", {
+    Text = "Create far-away arena (1000 x 1000 studs)", Default = false,
+    Callback = function(Value)
+        if Value then CreateArena() else RemoveArena() end
+    end,
+})
+ArenaBox:AddSlider("ArenaDistance", {
+    Text = "Distance from you (studs)", Default = 5000, Min = 1000, Max = 20000, Rounding = 0,
+    Callback = function(v)
+        ArenaDistance = v
+        if ArenaExists() and ArenaOrigin then
+            MoveArena(ArenaOrigin + Vector3.new(v, ArenaCenter.Y - 0, v))
+        end
+    end,
+})
+ArenaBox:AddSlider("ArenaHeight", {
+    Text = "Arena height (Y)", Default = 500, Min = 50, Max = 5000, Rounding = 0,
+    Callback = function(v)
+        ArenaHeight = v
+        if ArenaExists() then
+            MoveArena(Vector3.new(ArenaCenter.X, v, ArenaCenter.Z))
+        end
+    end,
+})
+ArenaBox:AddSlider("ArenaTransparency", {
+    Text = "Arena transparency", Default = 0.5, Min = 0, Max = 1, Rounding = 2,
+    Callback = function(v)
+        ArenaTransparency = v
+        if ArenaExists() then
+            for _, p in ipairs(ArenaFolder:GetChildren()) do
+                if p:IsA("BasePart") then p.Transparency = v end
+            end
+        end
+    end,
+})
+
+TeleBox:AddButton({ Text = "Teleport to safe arena", Func = GoToSafe })
+TeleBox:AddButton({ Text = "Return to previous position", Func = ReturnFromSafe })
+TeleBox:AddToggle("SafeKeep", {
+    Text = "Keep me in the arena (re-teleport if I fall out)", Default = false,
+    Callback = function(Value) AutoKeep = Value end,
+})
+
+task.spawn(function()
+    while true do
+        task.wait(0.25)
+        if AutoKeep and OnSafe and ArenaExists() and ArenaCenter then
+            local root = GetRoot()
+            if root and root.Position.Y < ArenaCenter.Y - 15 then
+                root.CFrame = CFrame.new(ArenaTop())
+                root.AssemblyLinearVelocity = Vector3.zero
+            end
+        end
+    end
+end)
+
+--------------------------------------------------------------------
+-- TAB: BADGE FARM
+--------------------------------------------------------------------
+local BadgeBox = Tabs.Badge:AddLeftGroupbox("Badge farm")
+
+local BadgeInterval = 10      -- seconds between fires
+local BadgeRunning = false
+local BadgeId = 0
+BadgeBox:AddLabel("bob farm")
+
+-- looks in the Backpack first, then in the character (in case the tool is equipped)
+local function FindReplicaEvent()
+    local containers = { LocalPlayer:FindFirstChild("Backpack"), GetChar() }
+    for _, c in ipairs(containers) do
+        local replica = c and c:FindFirstChild("Replica")
+        local ev = replica and replica:FindFirstChild("Event")
+        if ev then return ev end
+    end
+end
+
+local function FireBadge()
+    local ev = FindReplicaEvent()
+    if not ev then return false end
+    return pcall(function() ev:FireServer("glove") end)
+end
+
+BadgeBox:AddSlider("BadgeInterval", {
+    Text = "Interval between fires (s)", Default = 10, Min = 1, Max = 60, Rounding = 0,
+    Callback = function(v) BadgeInterval = v end,
+})
+BadgeBox:AddToggle("BadgeFarm", {
+    Text = "Badge farm (fires every interval)", Default = false,
+    Callback = function(Value)
+        BadgeRunning = Value
+        BadgeId += 1
+        local myId = BadgeId
+        if not Value then return end
+        task.spawn(function()
+            while BadgeRunning and myId == BadgeId do
+                FireBadge()
+                local waited = 0
+                while BadgeRunning and myId == BadgeId and waited < BadgeInterval do
+                    task.wait(0.25)
+                    waited += 0.25
+                end
+            end
+        end)
+    end,
+})
+
+-- LEGO SPAWNER
+-- fires Brick.Event:FireServer("lego") every N seconds (5 by default, slider goes up to 7)
+local LegoBox = Tabs.Badge:AddRightGroupbox("Lego spawner")
+local LegoInterval = 5
+local LegoRunning = false
+local LegoId = 0
+local LegoCount = 0
+local LegoStatus = Label(LegoBox, "Legos spawned: 0")
+
+-- looks in the character first (tool equipped), then in the Backpack
+local function FindBrickEvent()
+    local containers = { GetChar(), LocalPlayer:FindFirstChild("Backpack") }
+    for _, c in ipairs(containers) do
+        local brick = c and c:FindFirstChild("Brick")
+        local ev = brick and brick:FindFirstChild("Event")
+        if ev then return ev end
+    end
+end
+
+local function FireLego()
+    local ev = FindBrickEvent()
+    if not ev then return false end
+    local ok = pcall(function() ev:FireServer("lego") end)
+    if ok then
+        LegoCount += 1
+        LegoStatus:Set("Legos spawned: " .. LegoCount)
+    end
+    return ok
+end
+
+LegoBox:AddSlider("LegoInterval", {
+    Text = "Spawn a lego every (s)", Default = 5, Min = 5, Max = 7, Rounding = 1,
+    Callback = function(v) LegoInterval = v end,
+})
+LegoBox:AddToggle("LegoSpawn", {
+    Text = "Auto spawn lego", Default = false,
+    Callback = function(Value)
+        LegoRunning = Value
+        LegoId += 1
+        local myId = LegoId
+        if not Value then return end
+        task.spawn(function()
+            while LegoRunning and myId == LegoId do
+                FireLego()
+                local waited = 0
+                while LegoRunning and myId == LegoId and waited < LegoInterval do
+                    task.wait(0.1)
+                    waited += 0.1
+                end
+            end
+        end)
+    end,
+})
+LegoBox:AddButton({ Text = "Spawn one lego now", Func = function() FireLego() end })
+
+--------------------------------------------------------------------
+-- TAB: OPTIMIZATION
+--------------------------------------------------------------------
+local GfxBox = Tabs.Opt:AddLeftGroupbox("Graphics")
+local MiscBox = Tabs.Opt:AddRightGroupbox("Screen shake / performance")
+local FeatureList = {}
+
+local function NewFeature(applyFn)
+    local f = { Enabled = false, Saved = setmetatable({}, { __mode = "k" }) }
+    f.Set = function(inst, prop, value)
+        local ok, current = pcall(function() return inst[prop] end)
+        if not ok then return end
+        local s = f.Saved[inst]
+        if not s then s = {} f.Saved[inst] = s end
+        if s[prop] == nil then s[prop] = current end
+        pcall(function() inst[prop] = value end)
+    end
+    f.Apply = function(inst) applyFn(inst, f.Set) end
+    table.insert(FeatureList, f)
+    return f
+end
+
+local function RestoreFeature(f)
+    for inst, props in pairs(f.Saved) do
+        for prop, val in pairs(props) do pcall(function() inst[prop] = val end) end
+    end
+    f.Saved = setmetatable({}, { __mode = "k" })
+end
+
+local function EnableFeature(f)
+    f.Enabled = true
+    task.spawn(function()
+        local n = 0
+        for _, root in { workspace, Lighting } do
+            for _, inst in ipairs(root:GetDescendants()) do
+                if not f.Enabled then return end
+                pcall(f.Apply, inst)
+                n += 1
+                if n % 1000 == 0 then task.wait() end
+            end
+        end
+    end)
+end
+
+local function DisableFeature(f)
+    f.Enabled = false
+    RestoreFeature(f)
+end
+
+local function OnAdded(inst)
+    for _, f in ipairs(FeatureList) do
+        if f.Enabled then pcall(f.Apply, inst) end
+    end
+end
+workspace.DescendantAdded:Connect(OnAdded)
+Lighting.DescendantAdded:Connect(OnAdded)
+
+local F_Textures = NewFeature(function(i, set)
+    if i:IsA("Decal") or i:IsA("Texture") then set(i, "Transparency", 1) end
+end)
+local F_MeshTex = NewFeature(function(i, set)
+    if i:IsA("MeshPart") then set(i, "TextureID", "") end
+end)
+local F_Materials = NewFeature(function(i, set)
+    if i:IsA("BasePart") and not i:IsA("Terrain") then
+        set(i, "Material", Enum.Material.SmoothPlastic)
+        set(i, "Reflectance", 0)
+    end
+end)
+local F_Shadows = NewFeature(function(i, set)
+    if i:IsA("BasePart") then set(i, "CastShadow", false) end
+end)
+local F_Particles = NewFeature(function(i, set)
+    if i:IsA("ParticleEmitter") or i:IsA("Trail") or i:IsA("Beam")
+        or i:IsA("Fire") or i:IsA("Smoke") or i:IsA("Sparkles") then
+        set(i, "Enabled", false)
+    end
+end)
+local F_Effects = NewFeature(function(i, set)
+    if i:IsA("PostEffect") then set(i, "Enabled", false)
+    elseif i:IsA("Atmosphere") then set(i, "Density", 0) set(i, "Haze", 0)
+    elseif i:IsA("Clouds") then set(i, "Enabled", false) end
+end)
+local F_Water = NewFeature(function() end)
+
+local OptToggleIds = {}
+
+local function FeatureToggle(id, name, f, extraOn, extraOff)
+    GfxBox:AddToggle(id, {
+        Text = name, Default = false,
+        Callback = function(Value)
+            if Value then
+                EnableFeature(f)
+                if extraOn then pcall(extraOn) end
+            else
+                DisableFeature(f)
+                if extraOff then pcall(extraOff) end
+            end
+        end,
+    })
+    table.insert(OptToggleIds, id)
+end
+
+local OrigQuality
+GfxBox:AddToggle("OptQuality", {
+    Text = "Lowest graphics quality level", Default = false,
+    Callback = function(Value)
+        pcall(function()
+            local r = settings().Rendering
+            if Value then
+                OrigQuality = OrigQuality or r.QualityLevel
+                r.QualityLevel = Enum.QualityLevel.Level01
+            elseif OrigQuality then
+                r.QualityLevel = OrigQuality
+                OrigQuality = nil
+            end
+        end)
+    end,
+})
+table.insert(OptToggleIds, "OptQuality")
+
+FeatureToggle("OptTextures", "Remove textures and decals", F_Textures)
+FeatureToggle("OptMeshTex", "Remove mesh textures", F_MeshTex)
+FeatureToggle("OptMaterials", "Smooth plastic materials (no reflections)", F_Materials)
+FeatureToggle("OptShadows", "Disable shadows", F_Shadows,
+    function() F_Shadows.Set(Lighting, "GlobalShadows", false) end)
+FeatureToggle("OptParticles", "Disable particles, trails and beams", F_Particles)
+FeatureToggle("OptEffects", "Disable lighting effects (bloom, blur, rays, fog, clouds)", F_Effects)
+
+local OrigDecoration
+FeatureToggle("OptWater", "Flat water and no terrain grass", F_Water,
+    function()
+        local terrain = workspace.Terrain
+        F_Water.Set(terrain, "WaterWaveSize", 0)
+        F_Water.Set(terrain, "WaterWaveSpeed", 0)
+        F_Water.Set(terrain, "WaterReflectance", 0)
+        if gethiddenproperty and sethiddenproperty then
+            if OrigDecoration == nil then OrigDecoration = gethiddenproperty(terrain, "Decoration") end
+            sethiddenproperty(terrain, "Decoration", false)
+        end
+    end,
+    function()
+        if OrigDecoration ~= nil and sethiddenproperty then
+            sethiddenproperty(workspace.Terrain, "Decoration", OrigDecoration)
+            OrigDecoration = nil
+        end
+    end
+)
+
+GfxBox:AddButton({
+    Text = "Enable ALL low-graphics options",
+    Func = function()
+        for _, id in ipairs(OptToggleIds) do
+            pcall(function() Library.Toggles[id]:SetValue(true) end)
+        end
+    end,
+})
+GfxBox:AddButton({
+    Text = "Disable all (restore graphics)",
+    Func = function()
+        for _, id in ipairs(OptToggleIds) do
+            pcall(function() Library.Toggles[id]:SetValue(false) end)
+        end
+    end,
+})
+
+local NoShake = false
+local ShakeDisabled = {}
+
+local function KillShakeConnections()
+    if not getconnections then return end
+    local ev = ReplicatedStorage:FindFirstChild("ShakeEvent")
+    if not ev then return end
+    for _, c in ipairs(getconnections(ev.OnClientEvent)) do
+        pcall(function() c:Disable() end)
+        table.insert(ShakeDisabled, c)
+    end
+end
+
+local function EnableShakeBlock()
+    KillShakeConnections()
+    pcall(function() RunService:UnbindFromRenderStep("NoScreenShake") end)
+    RunService:BindToRenderStep("NoScreenShake", Enum.RenderPriority.Camera.Value - 1, function()
+        local hum = GetHum()
+        if hum and hum.CameraOffset ~= Vector3.zero then hum.CameraOffset = Vector3.zero end
+    end)
+end
+
+local function DisableShakeBlock()
+    pcall(function() RunService:UnbindFromRenderStep("NoScreenShake") end)
+    for _, c in ipairs(ShakeDisabled) do pcall(function() c:Enable() end) end
+    table.clear(ShakeDisabled)
+end
+
+MiscBox:AddToggle("OptNoShake", {
+    Text = "No screen shake", Default = false,
+    Callback = function(Value)
+        NoShake = Value
+        if Value then EnableShakeBlock() else DisableShakeBlock() end
+    end,
+})
+
+LocalPlayer.CharacterAdded:Connect(function()
+    if not NoShake then return end
+    for _ = 1, 4 do
+        task.wait(0.75)
+        if not NoShake then return end
+        KillShakeConnections()
+    end
+end)
+
+if setfpscap then
+    MiscBox:AddSlider("OptFpsCap", {
+        Text = "FPS cap", Default = 60, Min = 30, Max = 360, Rounding = 0,
+        Callback = function(v) pcall(setfpscap, v) end,
+    })
+end
+
+MiscBox:AddToggle("OptNo3D", {
+    Text = "Disable 3D rendering (AFK / max performance)", Default = false,
+    Callback = function(Value) pcall(function() RunService:Set3dRenderingEnabled(not Value) end) end,
+})
+
+local StatsLabel = Label(MiscBox, "FPS: ... | Ping: ...")
+do
+    local frames, last = 0, os.clock()
+    RunService.RenderStepped:Connect(function()
+        frames += 1
+        local now = os.clock()
+        if now - last >= 1 then
+            local ping = 0
+            pcall(function() ping = math.floor(Stats.Network.ServerStatsItem["Data Ping"]:GetValue()) end)
+            StatsLabel:Set("FPS: " .. frames .. " | Ping: " .. ping .. " ms")
+            frames, last = 0, now
+        end
+    end)
+end
+
+--------------------------------------------------------------------
+-- TAB: TELEPORTS
+--------------------------------------------------------------------
+local Islands = {
+    { "Sakura island", Vector3.new(-156, 45228, 98) },
+    { "Slapple island", Vector3.new(-339, 45283, 105) },
+    { "Main island", Vector3.new(12, 45228, 116) },
+    { "Moai's Island", Vector3.new(244, 45227, 135) },
+    { "Snow island", Vector3.new(12, 45228, 319) },
+    { "Desert Island", Vector3.new(18, 45228, -103) },
+}
+
+local TeleBoxIslands = Tabs.Teleports:AddLeftGroupbox("Islands")
+local TeleBoxSelect = Tabs.Teleports:AddRightGroupbox("Pick and go")
+
+local function TeleportTo(name, pos)
+    local root = GetRoot()
+    if not root then
+        Notify("Teleports", "Character not found.")
+        return
+    end
+    -- a few studs above the point so you don't spawn inside the floor
+    root.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))
+    root.AssemblyLinearVelocity = Vector3.zero
+    Notify("Teleports", "Teleported to " .. name, 2)
+end
+
+local IslandNames = {}
+local IslandPos = {}
+for _, island in ipairs(Islands) do
+    table.insert(IslandNames, island[1])
+    IslandPos[island[1]] = island[2]
+    TeleBoxIslands:AddButton({
+        Text = island[1],
+        Func = function() TeleportTo(island[1], island[2]) end,
+    })
+end
+
+local SelectedIsland = IslandNames[1]
+TeleBoxSelect:AddDropdown("TeleportIsland", {
+    Text = "Island", Values = IslandNames, Default = 1, Multi = false,
+    Callback = function(Value)
+        SelectedIsland = type(Value) == "table" and Value[1] or Value
+    end,
+})
+TeleBoxSelect:AddButton({
+    Text = "Teleport to selected island",
+    Func = function()
+        local pos = IslandPos[SelectedIsland]
+        if pos then TeleportTo(SelectedIsland, pos) end
+    end,
+})
+
+--------------------------------------------------------------------
+-- TAB: SETTINGS
+--------------------------------------------------------------------
+do
+    local MenuBox = Tabs.Settings:AddLeftGroupbox("Menu")
+
+    -- menu hide/show key (click the button next to the label, then press a key)
+    MenuBox:AddLabel("Menu keybind"):AddKeyPicker("MenuKeybind", {
+        Default = "RightShift", NoUI = true, Text = "Menu keybind",
+    })
+    pcall(function() Library.ToggleKeybind = Library.Options.MenuKeybind end)
+
+    MenuBox:AddToggle("SettingsCursor", {
+        Text = "Custom cursor", Default = false,
+        Callback = function(Value) pcall(function() Library.ShowCustomCursor = Value end) end,
+    })
+
+    MenuBox:AddDropdown("SettingsNotifySide", {
+        Text = "Notification side", Values = { "Left", "Right" }, Default = "Right", Multi = false,
+        Callback = function(Value) pcall(function() Library:SetNotifySide(Value) end) end,
+    })
+
+    MenuBox:AddDropdown("SettingsDPI", {
+        Text = "Menu size", Values = { "50%", "75%", "100%", "125%", "150%", "175%", "200%" },
+        Default = "100%", Multi = false,
+        Callback = function(Value)
+            local n = tonumber((tostring(Value):gsub("%%", "")))
+            if n then pcall(function() Library:SetDPIScale(n) end) end
+        end,
+    })
+
+    MenuBox:AddButton({
+        Text = "Unload script",
+        Func = function()
+            -- undo visual changes first
+            pcall(RestoreAll)
+            pcall(RestoreNametag)
+            Nametag.On = false
+            FakeSlaps.On = false
+            ESP.On = false
+            pcall(ESPRefresh)
+            pcall(function() RunService:Set3dRenderingEnabled(true) end)
+            Library:Unload()
+        end,
+    })
+
+    -- optional theme + config addons from the Obsidian repo (skipped quietly if they fail to load)
+    pcall(function()
+        local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
+        local SaveManager = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
+        ThemeManager:SetLibrary(Library)
+        SaveManager:SetLibrary(Library)
+        SaveManager:IgnoreThemeSettings()
+        SaveManager:SetIgnoreIndexes({ "MenuKeybind" })
+        ThemeManager:SetFolder("SlapBattlesButIMadeIt")
+        SaveManager:SetFolder("SlapBattlesButIMadeIt")
+        ThemeManager:ApplyToTab(Tabs.Settings)
+        SaveManager:BuildConfigSection(Tabs.Settings)
+    end)
+end
+
+--------------------------------------------------------------------
+-- TAB: CREDITS
+--------------------------------------------------------------------
+do
+    local CreditBox = Tabs.Credits:AddLeftGroupbox("Credits")
+    CreditBox:AddLabel("Yuki -- yeah it's me only lol", true)
+end
+
+Notify("Slap Battles but i made it", "Loaded. Use the menu keybind in Settings to hide/show the menu.", 4)
