@@ -1,0 +1,862 @@
+--// Obsidian UI 
+
+local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
+local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
+local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
+local SaveManager = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local LocalPlayer = Players.LocalPlayer
+local Options = Library.Options
+local Toggles = Library.Toggles
+
+--// Window
+local Window = Library:CreateWindow({
+	Title = "Natural Disaster",
+	Footer = "anti-fling",
+	Icon = 95816097006870,
+	NotifySide = "Right",
+	ShowCustomCursor = true,
+})
+
+local Tabs = {
+	Player = Window:AddTab("Player", "user"),
+	Ring = Window:AddTab("Super Ring", "tornado"),
+	Anti = Window:AddTab("Anti", "shield"),
+	Scripts = Window:AddTab("Scripts", "scroll-text"),
+	Credits = Window:AddTab("Credits", "heart"),
+	Settings = Window:AddTab("UI Settings", "settings"),
+}
+
+--// Anti-Fling logic
+local FlingActive = false -- set by the Player > Fling toggle (pauses anti-fling while fling is on)
+
+local AntiFling = {
+	Enabled = false,
+	NoCollide = true,
+	NoCollideSelf = true,
+	VelocityLimit = 80,
+	LockAngular = true,
+	Connections = {},
+	OriginalCollide = setmetatable({}, { __mode = "k" }),
+	LastSafeCFrame = nil,
+}
+
+local function getRoot()
+	local char = LocalPlayer.Character
+	return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function setOthersCollision(state)
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= LocalPlayer and plr.Character then
+			for _, part in ipairs(plr.Character:GetDescendants()) do
+				if part:IsA("BasePart") then
+					if not state then
+						-- remember original value, then disable
+						if AntiFling.OriginalCollide[part] == nil then
+							AntiFling.OriginalCollide[part] = part.CanCollide
+						end
+						part.CanCollide = false
+					else
+						local orig = AntiFling.OriginalCollide[part]
+						if orig ~= nil then
+							part.CanCollide = orig
+							AntiFling.OriginalCollide[part] = nil
+						end
+					end
+				end
+			end
+		end
+	end
+end
+
+local function setSelfCollision(state)
+	local char = LocalPlayer.Character
+	if not char then
+		return
+	end
+	for _, part in ipairs(char:GetDescendants()) do
+		if part:IsA("BasePart") then
+			if not state then
+				if AntiFling.OriginalCollide[part] == nil then
+					AntiFling.OriginalCollide[part] = part.CanCollide
+				end
+				part.CanCollide = false
+			else
+				local orig = AntiFling.OriginalCollide[part]
+				if orig ~= nil then
+					part.CanCollide = orig
+					AntiFling.OriginalCollide[part] = nil
+				end
+			end
+		end
+	end
+end
+
+local function onStepped()
+	if FlingActive then
+		return
+	end
+	if AntiFling.NoCollide then
+		setOthersCollision(false)
+	end
+	if AntiFling.NoCollideSelf then
+		setSelfCollision(false)
+	end
+end
+
+local function onHeartbeat()
+	-- don't fight Fling / Fly, they intentionally change your velocity
+	if FlingActive or (Toggles.FlyToggle and Toggles.FlyToggle.Value) then
+		return
+	end
+	local root = getRoot()
+	if not root then
+		return
+	end
+
+	local vel = root.AssemblyLinearVelocity
+	local ang = root.AssemblyAngularVelocity
+
+	-- flung: speed way above normal or crazy spin -> reset and go back to last safe spot
+	local tooFast = vel.Magnitude > AntiFling.VelocityLimit and (math.abs(vel.Y) > AntiFling.VelocityLimit or Vector3.new(vel.X, 0, vel.Z).Magnitude > AntiFling.VelocityLimit)
+	local tooSpin = AntiFling.LockAngular and ang.Magnitude > 50
+
+	if tooFast or tooSpin then
+		root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+		root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+		if AntiFling.LastSafeCFrame then
+			root.CFrame = AntiFling.LastSafeCFrame
+		end
+	else
+		AntiFling.LastSafeCFrame = root.CFrame
+	end
+end
+
+local function enableAntiFling()
+	if AntiFling.Enabled then
+		return
+	end
+	AntiFling.Enabled = true
+	table.insert(AntiFling.Connections, RunService.Stepped:Connect(onStepped))
+	table.insert(AntiFling.Connections, RunService.Heartbeat:Connect(onHeartbeat))
+end
+
+local function disableAntiFling()
+	AntiFling.Enabled = false
+	for _, c in ipairs(AntiFling.Connections) do
+		c:Disconnect()
+	end
+	table.clear(AntiFling.Connections)
+	setOthersCollision(true)
+	setSelfCollision(true)
+end
+
+--// UI: Anti tab
+local Group = Tabs.Anti:AddLeftGroupbox("Anti-Fling", "shield")
+
+Group:AddToggle("AntiFlingToggle", {
+	Text = "Anti-Fling",
+	Tooltip = "No collision with other players + resets you if you get flung",
+	Default = false,
+	Callback = function(value)
+		if value then
+			enableAntiFling()
+			Library:Notify({ Title = "Anti-Fling", Description = "Enabled", Time = 2 })
+		else
+			disableAntiFling()
+			Library:Notify({ Title = "Anti-Fling", Description = "Disabled", Time = 2 })
+		end
+	end,
+})
+
+Group:AddToggle("AntiFlingNoCollide", {
+	Text = "No Collision (other players)",
+	Default = true,
+	Callback = function(value)
+		AntiFling.NoCollide = value
+		if AntiFling.Enabled and not value then
+			setOthersCollision(true)
+		end
+	end,
+})
+
+Group:AddToggle("AntiFlingNoCollideSelf", {
+	Text = "No Collision (my character)",
+	Tooltip = "Your own character has no collision at all",
+	Default = true,
+	Callback = function(value)
+		AntiFling.NoCollideSelf = value
+		if AntiFling.Enabled and not value then
+			setSelfCollision(true)
+		end
+	end,
+})
+
+Group:AddToggle("AntiFlingAngular", {
+	Text = "Block Spin Velocity",
+	Default = true,
+	Callback = function(value)
+		AntiFling.LockAngular = value
+	end,
+})
+
+Group:AddSlider("AntiFlingVelocity", {
+	Text = "Velocity Limit",
+	Default = 80,
+	Min = 30,
+	Max = 300,
+	Rounding = 0,
+	Suffix = " studs/s",
+	Callback = function(value)
+		AntiFling.VelocityLimit = value
+	end,
+})
+
+local Info = Tabs.Anti:AddRightGroupbox("Info", "info")
+Info:AddLabel("Disables collision on other players' characters and cancels extreme velocity/spin on you, teleporting you back to your last safe position.", true)
+
+-- keep collisions off for players who join / respawn while enabled
+Players.PlayerAdded:Connect(function(plr)
+	plr.CharacterAdded:Connect(function()
+		if AntiFling.Enabled and AntiFling.NoCollide then
+			task.wait(0.2)
+			setOthersCollision(false)
+		end
+	end)
+end)
+
+--// Player tab
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+
+local DEFAULT_GRAVITY = Workspace.Gravity
+
+local function getHum()
+	local char = LocalPlayer.Character
+	return char and char:FindFirstChildOfClass("Humanoid")
+end
+
+-- nil-safe accessors for UI values (never error if a control doesn't exist yet)
+local function T(name)
+	local t = Toggles[name]
+	return t ~= nil and t.Value == true
+end
+
+local function O(name, default)
+	local o = Options[name]
+	if o ~= nil and o.Value ~= nil then
+		return o.Value
+	end
+	return default
+end
+
+local Movement = Tabs.Player:AddLeftGroupbox("Movement", "gauge")
+
+Movement:AddToggle("SpeedToggle", {
+	Text = "Speed",
+	Default = false,
+	Callback = function(value)
+		if not value then
+			local hum = getHum()
+			if hum then
+				hum.WalkSpeed = 16
+			end
+		end
+	end,
+})
+Movement:AddSlider("SpeedSlider", { Text = "WalkSpeed", Default = 50, Min = 16, Max = 300, Rounding = 0 })
+
+Movement:AddToggle("JumpToggle", {
+	Text = "Jump Power",
+	Default = false,
+	Callback = function(value)
+		if not value then
+			local hum = getHum()
+			if hum then
+				hum.JumpPower = 50
+			end
+		end
+	end,
+})
+Movement:AddSlider("JumpSlider", { Text = "JumpPower", Default = 100, Min = 50, Max = 500, Rounding = 0 })
+
+Movement:AddToggle("GravityToggle", {
+	Text = "Gravity",
+	Default = false,
+	Callback = function(value)
+		if not value then
+			Workspace.Gravity = DEFAULT_GRAVITY
+		end
+	end,
+})
+Movement:AddSlider("GravitySlider", { Text = "Gravity", Default = 100, Min = 0, Max = 400, Rounding = 0 })
+
+Movement:AddToggle("InfJumpToggle", { Text = "Infinite Jump", Default = false })
+
+UserInputService.JumpRequest:Connect(function()
+	if Toggles.InfJumpToggle and Toggles.InfJumpToggle.Value then
+		local hum = getHum()
+		if hum then
+			hum:ChangeState(Enum.HumanoidStateType.Jumping)
+		end
+	end
+end)
+
+local Misc = Tabs.Player:AddRightGroupbox("Misc", "sparkles")
+
+local flyBV
+local function stopFly()
+	if flyBV then
+		flyBV:Destroy()
+		flyBV = nil
+	end
+end
+
+Misc:AddToggle("FlyToggle", {
+	Text = "Fly",
+	Tooltip = "Move with your normal controls, Space = up, Ctrl = down",
+	Default = false,
+	Callback = function(value)
+		if not value then
+			stopFly()
+		end
+	end,
+})
+Misc:AddSlider("FlySpeed", { Text = "Fly Speed", Default = 60, Min = 10, Max = 300, Rounding = 0 })
+
+Misc:AddToggle("HipToggle", {
+	Text = "Hip Height",
+	Default = false,
+	Callback = function(value)
+		if not value then
+			local hum = getHum()
+			if hum then
+				hum.HipHeight = hum.RigType == Enum.HumanoidRigType.R15 and 2 or 0
+			end
+		end
+	end,
+})
+Misc:AddSlider("HipSlider", { Text = "Hip Height", Default = 5, Min = 0, Max = 30, Rounding = 1 })
+
+Misc:AddToggle("FOVToggle", {
+	Text = "Field of View",
+	Default = false,
+	Callback = function(value)
+		if not value and Workspace.CurrentCamera then
+			Workspace.CurrentCamera.FieldOfView = 70
+		end
+	end,
+})
+Misc:AddSlider("FOVSlider", { Text = "FOV", Default = 100, Min = 30, Max = 120, Rounding = 0 })
+
+Misc:AddButton("Reset Character", function()
+	local hum = getHum()
+	if hum then
+		hum.Health = 0
+	end
+end)
+
+RunService.Heartbeat:Connect(function()
+	local hum = getHum()
+	local root = getRoot()
+
+	if hum then
+		if T("SpeedToggle") then
+			hum.WalkSpeed = O("SpeedSlider", 50)
+		end
+		if T("JumpToggle") then
+			hum.UseJumpPower = true
+			hum.JumpPower = O("JumpSlider", 100)
+		end
+		if T("HipToggle") then
+			hum.HipHeight = O("HipSlider", 5)
+		end
+	end
+
+	if T("GravityToggle") then
+		Workspace.Gravity = O("GravitySlider", 100)
+	end
+
+	if T("FOVToggle") and Workspace.CurrentCamera then
+		Workspace.CurrentCamera.FieldOfView = O("FOVSlider", 100)
+	end
+
+	-- Fly
+	if T("FlyToggle") and hum and root then
+		if not flyBV or flyBV.Parent ~= root then
+			stopFly()
+			flyBV = Instance.new("BodyVelocity")
+			flyBV.MaxForce = Vector3.new(1e9, 1e9, 1e9)
+			flyBV.Velocity = Vector3.new(0, 0, 0)
+			flyBV.Parent = root
+		end
+		local cam = Workspace.CurrentCamera
+		local speed = O("FlySpeed", 60)
+		local md = hum.MoveDirection
+		local vel = md * speed
+		if md.Magnitude > 0 and cam then
+			local look = cam.CFrame.LookVector
+			local flat = Vector3.new(look.X, 0, look.Z)
+			if flat.Magnitude > 0 then
+				vel = vel + Vector3.new(0, look.Y * speed * md:Dot(flat.Unit), 0)
+			end
+		end
+		if UserInputService:IsKeyDown(Enum.KeyCode.Space) then
+			vel = vel + Vector3.new(0, speed, 0)
+		end
+		if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
+			vel = vel - Vector3.new(0, speed, 0)
+		end
+		flyBV.Velocity = vel
+	end
+end)
+
+--// Fling section
+local FlingGroup = Tabs.Player:AddLeftGroupbox("Fling", "zap")
+
+local DINO_ANIM = 204328711
+local PUNCH_ANIM_R15 = 846744780
+local PUNCH_ANIM_R6 = 204062532
+
+local trackCache = setmetatable({}, { __mode = "k" })
+
+local function getTrack(hum, id)
+	trackCache[hum] = trackCache[hum] or {}
+	if not trackCache[hum][id] then
+		local anim = Instance.new("Animation")
+		anim.AnimationId = "rbxassetid://" .. id
+		local animator = hum:FindFirstChildOfClass("Animator") or hum
+		trackCache[hum][id] = animator:LoadAnimation(anim)
+	end
+	return trackCache[hum][id]
+end
+
+local function isR15(hum)
+	return hum.RigType == Enum.HumanoidRigType.R15
+end
+
+FlingGroup:AddToggle("DinoAnim", {
+	Text = "Dino Anim",
+	Tooltip = "R6 only. Plays while you walk",
+	Default = false,
+	Callback = function(value)
+		local hum = getHum()
+		if value and hum and isR15(hum) then
+			Library:Notify({ Title = "Dino Anim", Description = "Only works on R6", Time = 3 })
+		end
+		if not value and hum and trackCache[hum] and trackCache[hum][DINO_ANIM] then
+			trackCache[hum][DINO_ANIM]:Stop()
+		end
+	end,
+})
+
+FlingGroup:AddToggle("PunchAnim", {
+	Text = "Punch Anim",
+	Tooltip = "Click / tap to play a punch animation",
+	Default = false,
+})
+
+FlingGroup:AddToggle("FlingToggle", {
+	Text = "Fling",
+	Tooltip = "Touch players to fling them. Pauses Anti-Fling while on",
+	Default = false,
+	Callback = function(value)
+		FlingActive = value
+		if not value then
+			return
+		end
+		-- fling needs real collisions, so give them back while it's on
+		setOthersCollision(true)
+		setSelfCollision(true)
+		task.spawn(function()
+			while FlingActive do
+				local root = getRoot()
+				if root then
+					local power = tonumber(O("FlingPower", 10000)) or 10000
+					local vel = root.AssemblyLinearVelocity
+					root.AssemblyLinearVelocity = vel * power + Vector3.new(0, power, 0)
+					RunService.RenderStepped:Wait()
+					root.AssemblyLinearVelocity = vel
+					RunService.Stepped:Wait()
+					root.AssemblyLinearVelocity = vel + Vector3.new(0, 0.1, 0)
+				end
+				RunService.Heartbeat:Wait()
+			end
+		end)
+	end,
+})
+
+FlingGroup:AddInput("FlingPower", {
+	Text = "Fling Power",
+	Default = "10000",
+	Numeric = true,
+	Finished = true,
+	Placeholder = "Enter power",
+	Callback = function(value)
+		if not tonumber(value) then
+			Options.FlingPower:SetValue("10000")
+		end
+	end,
+})
+
+-- Dino anim: plays while walking (R6 only)
+RunService.Heartbeat:Connect(function()
+	local hum = getHum()
+	if not hum or isR15(hum) then
+		return
+	end
+	if T("DinoAnim") then
+		local track = getTrack(hum, DINO_ANIM)
+		if hum.MoveDirection.Magnitude > 0 then
+			if not track.IsPlaying then
+				track:Play()
+			end
+		elseif track.IsPlaying then
+			track:Stop()
+		end
+	end
+end)
+
+-- Punch anim: click / tap (ignores clicks on UI)
+UserInputService.InputBegan:Connect(function(input, processed)
+	if processed or not T("PunchAnim") then
+		return
+	end
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		local hum = getHum()
+		if hum then
+			getTrack(hum, isR15(hum) and PUNCH_ANIM_R15 or PUNCH_ANIM_R6):Play()
+		end
+	end
+end)
+
+Library:OnUnload(function()
+	FlingActive = false
+	stopFly()
+	Workspace.Gravity = DEFAULT_GRAVITY
+end)
+
+--// Super Ring tab (optimized: array + swap-remove, batched updates, no per-part trig, chunked scan)
+local Ring = {
+	Enabled = false,
+	List = {}, -- array of parts (fast numeric iteration)
+	Index = {}, -- [part] = position in List
+	Count = 0,
+	Cursor = 1,
+	Original = setmetatable({}, { __mode = "k" }),
+	Connections = {},
+	LastSim = 0,
+	ScanToken = 0,
+}
+
+local mSin, mCos, mAbs, mMin, mSqrt = math.sin, math.cos, math.abs, math.min, math.sqrt
+local v3 = Vector3.new
+
+local function getOtherChars()
+	local list = {}
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= LocalPlayer and plr.Character then
+			list[#list + 1] = plr.Character
+		end
+	end
+	return list
+end
+
+local function ringAdd(part, chars)
+	if Ring.Index[part] or not part:IsA("BasePart") or part.Anchored then
+		return
+	end
+	local myChar = LocalPlayer.Character
+	if myChar and part:IsDescendantOf(myChar) then
+		return
+	end
+	if not T("RingPlayers") then
+		chars = chars or getOtherChars()
+		for i = 1, #chars do
+			if part:IsDescendantOf(chars[i]) then
+				return
+			end
+		end
+	end
+	Ring.Original[part] = { Props = part.CustomPhysicalProperties, CanCollide = part.CanCollide }
+	part.CustomPhysicalProperties = PhysicalProperties.new(0, 0, 0, 0, 0)
+	part.CanCollide = false
+	local n = Ring.Count + 1
+	Ring.Count = n
+	Ring.List[n] = part
+	Ring.Index[part] = n
+end
+
+local function ringRemove(part)
+	local i = Ring.Index[part]
+	if not i then
+		return
+	end
+	local n = Ring.Count
+	local last = Ring.List[n]
+	Ring.List[i] = last
+	Ring.Index[last] = i
+	Ring.List[n] = nil
+	Ring.Index[part] = nil
+	Ring.Count = n - 1
+end
+
+local function ringRestoreAll()
+	local list = Ring.List
+	for i = 1, Ring.Count do
+		local part = list[i]
+		local orig = Ring.Original[part]
+		if orig and part.Parent then
+			part.CustomPhysicalProperties = orig.Props
+			part.CanCollide = orig.CanCollide
+		end
+		Ring.Original[part] = nil
+	end
+	table.clear(Ring.List)
+	table.clear(Ring.Index)
+	Ring.Count = 0
+	Ring.Cursor = 1
+end
+
+-- scan the workspace in chunks so enabling doesn't freeze the game
+local function ringScan()
+	Ring.ScanToken = Ring.ScanToken + 1
+	local token = Ring.ScanToken
+	task.spawn(function()
+		local descendants = Workspace:GetDescendants()
+		local chars = getOtherChars()
+		for i = 1, #descendants do
+			if token ~= Ring.ScanToken or not Ring.Enabled then
+				return
+			end
+			ringAdd(descendants[i], chars)
+			if i % 300 == 0 then
+				RunService.Heartbeat:Wait()
+			end
+		end
+	end)
+end
+
+local function ringStep()
+	-- refresh the simulation radius about once a second instead of every frame
+	local now = os.clock()
+	if sethiddenproperty and now - Ring.LastSim > 1 then
+		Ring.LastSim = now
+		pcall(sethiddenproperty, LocalPlayer, "SimulationRadius", math.huge)
+	end
+
+	local count = Ring.Count
+	if count == 0 then
+		return
+	end
+	local root = getRoot()
+	if not root then
+		return
+	end
+
+	local center = root.Position
+	local cx, cy, cz = center.X, center.Y, center.Z
+	local radius = O("RingRadius", 50)
+	local height = O("RingHeight", 100)
+	local strength = O("RingStrength", 1000)
+	local rot = math.rad(O("RingSpeed", 10))
+	local cosR, sinR = mCos(rot), mSin(rot)
+
+	local batch = O("RingBatch", 600)
+	if batch > count then
+		batch = count
+	end
+
+	local list = Ring.List
+	local cursor = Ring.Cursor
+
+	for _ = 1, batch do
+		if cursor > count then
+			cursor = 1
+		end
+		local part = list[cursor]
+		cursor = cursor + 1
+
+		if part.Parent and not part.Anchored then
+			local pos = part.Position
+			local px, py, pz = pos.X, pos.Y, pos.Z
+			local dx, dz = px - cx, pz - cz
+			local dist = mSqrt(dx * dx + dz * dz)
+
+			-- rotate the horizontal offset by the rotation step (same as atan2 + angle, without trig per part)
+			local scale = 0
+			if dist > 0 then
+				scale = mMin(radius, dist) / dist
+			end
+			local tx = cx + (dx * cosR - dz * sinR) * scale
+			local tz = cz + (dx * sinR + dz * cosR) * scale
+			local ty = cy + height * mAbs(mSin((py - cy) / height))
+
+			local vx, vy, vz = tx - px, ty - py, tz - pz
+			local mag = mSqrt(vx * vx + vy * vy + vz * vz)
+			if mag > 0.001 then
+				local k = strength / mag
+				part.AssemblyLinearVelocity = v3(vx * k, vy * k, vz * k)
+			end
+		end
+	end
+
+	Ring.Cursor = cursor
+end
+
+local function ringEnable()
+	if Ring.Enabled then
+		return
+	end
+	Ring.Enabled = true
+	pcall(function()
+		LocalPlayer.ReplicationFocus = Workspace
+	end)
+	ringScan()
+	table.insert(Ring.Connections, Workspace.DescendantAdded:Connect(function(p)
+		ringAdd(p)
+	end))
+	table.insert(Ring.Connections, Workspace.DescendantRemoving:Connect(ringRemove))
+	table.insert(Ring.Connections, RunService.Heartbeat:Connect(ringStep))
+end
+
+local function ringDisable()
+	Ring.Enabled = false
+	Ring.ScanToken = Ring.ScanToken + 1 -- cancels a scan in progress
+	for _, c in ipairs(Ring.Connections) do
+		c:Disconnect()
+	end
+	table.clear(Ring.Connections)
+	ringRestoreAll()
+end
+
+local RingGroup = Tabs.Ring:AddLeftGroupbox("Ring Parts", "tornado")
+
+RingGroup:AddToggle("RingToggle", {
+	Text = "Ring Parts",
+	Tooltip = "Makes unanchored parts orbit around you",
+	Default = false,
+	Callback = function(value)
+		if value then
+			ringEnable()
+		else
+			ringDisable()
+		end
+	end,
+})
+
+RingGroup:AddToggle("RingPlayers", {
+	Text = "Affect Other Players",
+	Tooltip = "Off = other players' characters are left alone",
+	Default = false,
+	Callback = function()
+		if Ring.Enabled then
+			ringRestoreAll()
+			ringScan()
+		end
+	end,
+})
+
+RingGroup:AddSlider("RingRadius", { Text = "Radius", Default = 50, Min = 10, Max = 100, Rounding = 0 })
+RingGroup:AddSlider("RingHeight", { Text = "Height", Default = 100, Min = 10, Max = 300, Rounding = 0 })
+RingGroup:AddSlider("RingSpeed", { Text = "Rotation Speed", Default = 10, Min = 1, Max = 50, Rounding = 0 })
+RingGroup:AddSlider("RingStrength", { Text = "Attraction Strength", Default = 1000, Min = 100, Max = 3000, Rounding = 0 })
+RingGroup:AddSlider("RingBatch", {
+	Text = "Parts Per Frame",
+	Tooltip = "Lower = less lag (parts update in rotation). Higher = smoother ring",
+	Default = 600,
+	Min = 50,
+	Max = 3000,
+	Rounding = 0,
+})
+
+local RingInfo = Tabs.Ring:AddRightGroupbox("Info", "info")
+RingInfo:AddLabel("Needs an executor that supports sethiddenproperty (for SimulationRadius). Parts are only touched while the toggle is on, and their physics are restored when you turn it off.", true)
+
+Library:OnUnload(ringDisable)
+
+--// Scripts tab
+local function runRemote(name, url)
+	Library:Notify({ Title = name, Description = "Loading...", Time = 2 })
+	local ok, err = pcall(function()
+		loadstring(game:HttpGet(url))()
+	end)
+	if not ok then
+		warn(("[%s] failed to load: %s"):format(name, tostring(err)))
+		Library:Notify({ Title = name, Description = "Failed to load (check console)", Time = 4 })
+	end
+end
+
+local ScriptsGroup = Tabs.Scripts:AddLeftGroupbox("Scripts", "scroll-text")
+
+ScriptsGroup:AddButton({
+	Text = "RemoteSpy",
+	Tooltip = "Cobalt remote spy",
+	Func = function()
+		runRemote("RemoteSpy", "https://github.com/notpoiu/cobalt/releases/latest/download/Cobalt.luau")
+	end,
+})
+
+ScriptsGroup:AddButton({
+	Text = "Dex Explorer",
+	Tooltip = "Mobile-friendly game explorer / property viewer",
+	Func = function()
+		runRemote("Dex Explorer", "https://scriptblox.com/raw/Universal-Script-Keyless-mobile-dex-17888")
+	end,
+})
+
+ScriptsGroup:AddButton({
+	Text = "Infinite Yield",
+	Tooltip = "Admin commands",
+	Func = function()
+		runRemote("Infinite Yield", "https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source")
+	end,
+})
+
+ScriptsGroup:AddButton({
+	Text = "Emote Script",
+	Tooltip = "Universal emote script",
+	Func = function()
+		runRemote("Emote Script", "https://rawscripts.net/raw/Universal-Script-7yd7-I-Emote-Script-48024")
+	end,
+})
+
+--// Credits tab
+local CreditsGroup = Tabs.Credits:AddLeftGroupbox("Credits", "heart")
+CreditsGroup:AddLabel("YukiScripts -- Me")
+CreditsGroup:AddLabel("122f92")
+CreditsGroup:AddLabel("Shadow550")
+CreditsGroup:AddLabel("And more scripters")
+
+--// UI Settings tab
+local MenuGroup = Tabs.Settings:AddLeftGroupbox("Menu", "wrench")
+MenuGroup:AddToggle("KeybindMenuOpen", {
+	Default = Library.KeybindFrame.Visible,
+	Text = "Open Keybind Menu",
+	Callback = function(value)
+		Library.KeybindFrame.Visible = value
+	end,
+})
+MenuGroup:AddLabel("Menu bind"):AddKeyPicker("MenuKeybind", { Default = "RightShift", NoUI = true, Text = "Menu keybind" })
+MenuGroup:AddButton("Unload", function()
+	disableAntiFling()
+	Library:Unload()
+end)
+
+Library.ToggleKeybind = Options.MenuKeybind
+
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({ "MenuKeybind" })
+ThemeManager:SetFolder("AntiHub")
+SaveManager:SetFolder("AntiHub/configs")
+SaveManager:BuildConfigSection(Tabs.Settings)
+ThemeManager:ApplyToTab(Tabs.Settings)
+SaveManager:LoadAutoloadConfig()
+
+Library:OnUnload(disableAntiFling)
