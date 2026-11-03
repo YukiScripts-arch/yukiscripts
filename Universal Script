@@ -1,12 +1,4 @@
 -- Universal By YukiScripts (Obsidian UI)
--- Player tab: WalkSpeed, Jump Power, Gravity, FOV, Fly, Noclip, Infinite Jump
--- Aimbot tab: hold-RMB / auto aim, team check, heads only, ray check
--- Visuals tab: Fullbright
--- Features tab: Tpposition (teleport to X/Y/Z), Copyposition
--- Misc tab: Infinite Yield, Moon Dex, Remote Spy, F3X, BTools, Anti AFK, Rejoin, Server Hop
--- ESP tab: every ESP toggle/option from the original script
--- Ping Helper tab: Backtrack (incoming lag) + ping/FPS display
--- Settings tab: config save/load/delete, native Obsidian menu keybind, unload
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
