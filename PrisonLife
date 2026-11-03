@@ -1,0 +1,877 @@
+--------------------------------------------------
+-- Prison Life | Obsidian UI
+--------------------------------------------------
+local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
+local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
+local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
+local SaveManager = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
+
+-- Services
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+
+local localPlayer = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+
+-- Connection tracking (cleaned up on unload)
+local connections = {}
+local function track(conn)
+    table.insert(connections, conn)
+    return conn
+end
+
+local function getRoot()
+    local char = localPlayer.Character
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function getHumanoid()
+    local char = localPlayer.Character
+    return char and char:FindFirstChildOfClass("Humanoid")
+end
+
+--------------------------------------------------
+-- Window
+--------------------------------------------------
+local Window = Library:CreateWindow({
+    Title = "Prison Life",
+    Footer = "YukiScripts",
+    Icon = 95816097006870,
+    NotifySide = "Right",
+    ShowCustomCursor = true,
+})
+
+local Tabs = {
+    General = Window:AddTab("General", "sword"),
+    Player = Window:AddTab("Local Player", "user"),
+    Teleport = Window:AddTab("Teleport", "wind"),
+    Combat = Window:AddTab("Combat", "crosshair"),
+    Weapons = Window:AddTab("Weapons", "swords"),
+    ESP = Window:AddTab("ESP", "eye"),
+    Credits = Window:AddTab("Credits", "heart"),
+    Settings = Window:AddTab("UI Settings", "settings"),
+}
+
+--------------------------------------------------
+-- General Tab
+--------------------------------------------------
+local GeneralBox = Tabs.General:AddLeftGroupbox("Map")
+
+GeneralBox:AddButton({
+    Text = "Electric fences can't kill you",
+    Func = function()
+        local fences = workspace:FindFirstChild("Prison_Fences")
+        if not fences then
+            Library:Notify({ Title = "Prison Life", Description = "Prison_Fences not found", Time = 3 })
+            return
+        end
+
+        for _, object in ipairs(fences:GetDescendants()) do
+            if object.Name == "damagePart" then
+                object:Destroy()
+            end
+        end
+
+        track(fences.DescendantAdded:Connect(function(descendant)
+            if descendant.Name == "damagePart" then
+                task.wait()
+                descendant:Destroy()
+            end
+        end))
+    end,
+})
+
+GeneralBox:AddButton({
+    Text = "Delete keycard doors",
+    Func = function()
+        local doors = workspace:FindFirstChild("Doors")
+        if doors then doors:Destroy() end
+    end,
+})
+
+GeneralBox:AddButton({
+    Text = "Delete cell doors",
+    Func = function()
+        local cellDoors = workspace:FindFirstChild("CellDoors")
+        if cellDoors then cellDoors:Destroy() end
+    end,
+})
+
+GeneralBox:AddButton({
+    Text = "Delete all toilets",
+    Func = function()
+        for _, v in ipairs(workspace:GetDescendants()) do
+            if v.Name == "Toilet" then
+                v:Destroy()
+            end
+        end
+    end,
+})
+
+-- Auto Arrest
+local AutoArrestEnabled = false
+local ArrestDistance = 15
+
+local ArrestBox = Tabs.General:AddRightGroupbox("Auto Arrest")
+
+ArrestBox:AddToggle("AutoArrest", {
+    Text = "Enable auto arrest nearby",
+    Default = false,
+    Callback = function(v)
+        AutoArrestEnabled = v
+    end,
+})
+
+ArrestBox:AddSlider("ArrestDistance", {
+    Text = "Arrest distance (studs)",
+    Default = 15,
+    Min = 5,
+    Max = 100,
+    Rounding = 0,
+    Callback = function(v)
+        ArrestDistance = v
+    end,
+})
+
+task.spawn(function()
+    while task.wait(0.25) do
+        if Library.Unloaded then break end
+        if not AutoArrestEnabled then continue end
+
+        local myRoot = getRoot()
+        if not myRoot then continue end
+
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr == localPlayer or not plr.Character then continue end
+
+            local team = plr.Team
+            if team and (team.Name == "Prisoners" or team.Name == "Prisoner" or team.Name == "Inmates") then
+                local targetRoot = plr.Character:FindFirstChild("HumanoidRootPart")
+                if targetRoot and (myRoot.Position - targetRoot.Position).Magnitude <= ArrestDistance then
+                    pcall(function()
+                        ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("ArrestPlayer"):InvokeServer(plr, 1)
+                    end)
+                end
+            end
+        end
+    end
+end)
+
+--------------------------------------------------
+-- Local Player Tab
+--------------------------------------------------
+local MoveBox = Tabs.Player:AddLeftGroupbox("Movement")
+
+local WalkSpeedEnabled, WalkSpeedValue = false, 50
+local JumpPowerEnabled, JumpPowerValue = false, 50
+local InfiniteJump = false
+
+MoveBox:AddToggle("WalkSpeedToggle", {
+    Text = "Enable walk speed",
+    Default = false,
+    Callback = function(v)
+        WalkSpeedEnabled = v
+        if not v then
+            local hum = getHumanoid()
+            if hum then hum.WalkSpeed = 16 end
+        end
+    end,
+})
+
+MoveBox:AddSlider("WalkSpeedValue", {
+    Text = "Walk speed",
+    Default = 50,
+    Min = 16,
+    Max = 250,
+    Rounding = 0,
+    Callback = function(v)
+        WalkSpeedValue = v
+    end,
+})
+
+MoveBox:AddToggle("JumpPowerToggle", {
+    Text = "Enable jump power",
+    Default = false,
+    Callback = function(v)
+        JumpPowerEnabled = v
+        if not v then
+            local hum = getHumanoid()
+            if hum then hum.JumpPower = 50 end
+        end
+    end,
+})
+
+MoveBox:AddSlider("JumpPowerValue", {
+    Text = "Jump power",
+    Default = 50,
+    Min = 50,
+    Max = 300,
+    Rounding = 0,
+    Callback = function(v)
+        JumpPowerValue = v
+    end,
+})
+
+MoveBox:AddToggle("InfiniteJump", {
+    Text = "Enable infinite jump",
+    Default = false,
+    Callback = function(v)
+        InfiniteJump = v
+    end,
+})
+
+track(RunService.Heartbeat:Connect(function()
+    local hum = getHumanoid()
+    if not hum then return end
+
+    if WalkSpeedEnabled then
+        hum.WalkSpeed = WalkSpeedValue
+    end
+    if JumpPowerEnabled then
+        hum.UseJumpPower = true
+        hum.JumpPower = JumpPowerValue
+    end
+end))
+
+track(UserInputService.JumpRequest:Connect(function()
+    if InfiniteJump then
+        local hum = getHumanoid()
+        if hum then
+            hum:ChangeState(Enum.HumanoidStateType.Jumping)
+        end
+    end
+end))
+
+-- Invisible
+local InvisBox = Tabs.Player:AddRightGroupbox("Invisibility")
+
+local isInvisible = false
+local characterParts = {}
+
+local function setupCharacter()
+    local character = localPlayer.Character or localPlayer.CharacterAdded:Wait()
+    character:WaitForChild("Humanoid")
+    character:WaitForChild("HumanoidRootPart")
+    characterParts = {}
+
+    for _, part in ipairs(character:GetDescendants()) do
+        if part:IsA("BasePart") and part.Transparency == 0 then
+            table.insert(characterParts, part)
+        end
+    end
+end
+
+local function setInvisibleState(state)
+    isInvisible = state
+    for _, part in ipairs(characterParts) do
+        if part and part.Parent then
+            part.Transparency = isInvisible and 0.5 or 0
+        end
+    end
+end
+
+task.spawn(setupCharacter)
+
+track(localPlayer.CharacterAdded:Connect(function()
+    isInvisible = false
+    if Library.Toggles.Invisible then
+        Library.Toggles.Invisible:SetValue(false)
+    end
+    setupCharacter()
+end))
+
+track(RunService.Heartbeat:Connect(function()
+    if not isInvisible then return end
+
+    local rootPart = getRoot()
+    local humanoid = getHumanoid()
+    if not (rootPart and humanoid) then return end
+
+    local oldCFrame = rootPart.CFrame
+    local oldCameraOffset = humanoid.CameraOffset
+
+    local targetCFrame = oldCFrame * CFrame.new(0, -75, 0)
+    local offset = targetCFrame:ToObjectSpace(CFrame.new(oldCFrame.Position)).Position
+
+    rootPart.CFrame = targetCFrame
+    humanoid.CameraOffset = offset
+
+    RunService.RenderStepped:Wait()
+
+    rootPart.CFrame = oldCFrame
+    humanoid.CameraOffset = oldCameraOffset
+end))
+
+InvisBox:AddToggle("Invisible", {
+    Text = "Enable invisible",
+    Default = false,
+    Callback = function(v)
+        setInvisibleState(v)
+    end,
+})
+
+--------------------------------------------------
+-- Teleport Tab
+--------------------------------------------------
+local TpBox = Tabs.Teleport:AddLeftGroupbox("Teleports")
+
+local tps = {
+    { "Police gun", Vector3.new(856.14, 102.62, 2256.75) },
+    { "Thieves' base", Vector3.new(-981.62, 108.12, 2056.98) },
+    { "Outside of prison", Vector3.new(485.23, 97.99, 2244.82) },
+    { "Thief's car spawn", Vector3.new(-915.86, 95.13, 2134.13) },
+    { "Police car spawn", Vector3.new(615.49, 98.20, 2488.75) },
+}
+
+for _, data in ipairs(tps) do
+    TpBox:AddButton({
+        Text = "Tp to " .. data[1],
+        Func = function()
+            local hrp = getRoot()
+            if hrp then
+                hrp.CFrame = CFrame.new(data[2])
+            end
+        end,
+    })
+end
+
+--------------------------------------------------
+-- Combat Tab - Aim Lock
+--------------------------------------------------
+local aiming = false
+local fovEnabled = false
+local smoothness = 0.1
+local fovRadius = 360
+local aimPart = "Head"
+local wallCheckEnabled = false
+local fovColor = Color3.fromRGB(255, 0, 0)
+local rainbowEnabled = false
+
+local AimBlacklist = {
+    Players = {},
+    Teams = {
+        ["Guards"] = false,
+        ["Prisoners"] = false,
+        ["Criminals"] = false,
+    },
+}
+
+local fovCircle
+if Drawing then
+    fovCircle = Drawing.new("Circle")
+    fovCircle.Thickness = 0.5
+    fovCircle.NumSides = 64
+    fovCircle.Filled = false
+    fovCircle.Transparency = 1
+    fovCircle.Visible = false
+end
+
+local function isVisible(targetPart)
+    local origin = camera.CFrame.Position
+    local direction = targetPart.Position - origin
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = { localPlayer.Character, camera }
+    local result = workspace:Raycast(origin, direction, params)
+    return not result or result.Instance:IsDescendantOf(targetPart.Parent)
+end
+
+local function getTarget()
+    local closest, minDist = nil, fovRadius
+    local center = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+
+    for _, p in ipairs(Players:GetPlayers()) do
+        local char = p.Character
+        if p ~= localPlayer and char and char:FindFirstChild(aimPart)
+            and char:FindFirstChild("Humanoid") and char.Humanoid.Health > 0 then
+
+            if AimBlacklist.Players[p.Name] then continue end
+            if p.Team and AimBlacklist.Teams[p.Team.Name] then continue end
+
+            local part = char[aimPart]
+            local pos, onScreen = camera:WorldToViewportPoint(part.Position)
+
+            if onScreen then
+                local dist = (Vector2.new(pos.X, pos.Y) - center).Magnitude
+                if dist < minDist then
+                    if wallCheckEnabled and not isVisible(part) then
+                        continue
+                    end
+                    minDist = dist
+                    closest = part
+                end
+            end
+        end
+    end
+
+    return closest
+end
+
+track(RunService.RenderStepped:Connect(function()
+    camera = workspace.CurrentCamera
+
+    if fovCircle then
+        if rainbowEnabled then
+            fovCircle.Color = Color3.fromHSV((tick() % 5) / 5, 1, 1)
+        else
+            fovCircle.Color = fovColor
+        end
+        fovCircle.Visible = fovEnabled
+        fovCircle.Radius = fovRadius
+        fovCircle.Position = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+    end
+
+    if aiming then
+        local target = getTarget()
+        if target then
+            camera.CFrame = camera.CFrame:Lerp(CFrame.new(camera.CFrame.Position, target.Position), smoothness)
+        end
+    end
+end))
+
+local AimBox = Tabs.Combat:AddLeftGroupbox("Aim Lock")
+
+AimBox:AddToggle("AimLock", {
+    Text = "Enable aim lock",
+    Default = false,
+    Callback = function(v) aiming = v end,
+})
+
+AimBox:AddToggle("FovCircle", {
+    Text = "Show FOV circle",
+    Default = false,
+    Callback = function(v) fovEnabled = v end,
+})
+
+AimBox:AddToggle("WallCheck", {
+    Text = "Enable wall check",
+    Default = false,
+    Callback = function(v) wallCheckEnabled = v end,
+})
+
+AimBox:AddSlider("FovSize", {
+    Text = "FOV size",
+    Default = 360,
+    Min = 50,
+    Max = 800,
+    Rounding = 0,
+    Callback = function(v) fovRadius = v end,
+})
+
+AimBox:AddSlider("Smoothness", {
+    Text = "Smoothness",
+    Default = 0.1,
+    Min = 0.01,
+    Max = 1,
+    Rounding = 2,
+    Callback = function(v) smoothness = v end,
+})
+
+AimBox:AddDropdown("AimPart", {
+    Text = "Locking part",
+    Values = { "Head", "HumanoidRootPart", "UpperTorso", "LowerTorso" },
+    Default = 1,
+    Multi = false,
+    Callback = function(v)
+        if type(v) == "string" and v ~= "" then
+            aimPart = v
+        end
+    end,
+})
+
+AimBox:AddToggle("FovRainbow", {
+    Text = "Rainbow FOV",
+    Default = false,
+    Callback = function(v) rainbowEnabled = v end,
+})
+
+AimBox:AddLabel("FOV color"):AddColorPicker("FovColor", {
+    Default = fovColor,
+    Callback = function(v) fovColor = v end,
+})
+
+local AimBlBox = Tabs.Combat:AddLeftGroupbox("Aim Lock Blacklist")
+
+AimBlBox:AddInput("AimBlacklistUser", {
+    Text = "Username blacklist",
+    Placeholder = "name1, name2",
+    Default = "",
+    Finished = true,
+    Callback = function(Text)
+        AimBlacklist.Players = {}
+        for name in string.gmatch(Text or "", "[^,%s]+") do
+            AimBlacklist.Players[name] = true
+        end
+    end,
+})
+
+for _, teamName in ipairs({ "Guards", "Prisoners", "Criminals" }) do
+    AimBlBox:AddToggle("AimBl" .. teamName, {
+        Text = "Blacklist " .. teamName .. " team",
+        Default = false,
+        Callback = function(v) AimBlacklist.Teams[teamName] = v end,
+    })
+end
+
+--------------------------------------------------
+-- Combat Tab - Kill All Loop
+--------------------------------------------------
+local Settings = {
+    Enabled = false,
+    Mode = "Teleport",
+    TweenSpeed = 150,
+    DelayPerPlayer = 0.1,
+    BlacklistedPlayers = {},
+    BlacklistedTeams = {
+        ["Guards"] = false,
+        ["Prisoners"] = false,
+        ["Criminals"] = false,
+    },
+}
+
+local function getTeamName(plr)
+    return plr.Team and plr.Team.Name or ""
+end
+
+local function moveToTarget(targetPart)
+    local localHRP = getRoot()
+    if not localHRP then return end
+
+    if Settings.Mode == "Teleport" then
+        localHRP.CFrame = targetPart.CFrame
+    else
+        local distance = (localHRP.Position - targetPart.Position).Magnitude
+        local duration = distance / math.max(Settings.TweenSpeed, 1)
+        local tween = TweenService:Create(localHRP, TweenInfo.new(duration, Enum.EasingStyle.Linear), { CFrame = targetPart.CFrame })
+        tween:Play()
+        tween.Completed:Wait()
+    end
+end
+
+local KillBox = Tabs.Combat:AddRightGroupbox("Kill All Loop (risky)")
+
+KillBox:AddToggle("KillAll", {
+    Text = "Enable kill all loop",
+    Default = false,
+    Callback = function(v) Settings.Enabled = v end,
+})
+
+KillBox:AddDropdown("KillMode", {
+    Text = "Move mode",
+    Values = { "Teleport", "Tween" },
+    Default = 1,
+    Multi = false,
+    Callback = function(v) Settings.Mode = v end,
+})
+
+KillBox:AddSlider("TweenSpeed", {
+    Text = "Tween speed",
+    Default = 150,
+    Min = 10,
+    Max = 500,
+    Rounding = 0,
+    Callback = function(v) Settings.TweenSpeed = v end,
+})
+
+KillBox:AddSlider("KillDelay", {
+    Text = "Delay (s)",
+    Default = 0.1,
+    Min = 0,
+    Max = 2,
+    Rounding = 2,
+    Callback = function(v) Settings.DelayPerPlayer = v end,
+})
+
+KillBox:AddInput("KillBlacklistUser", {
+    Text = "Username blacklist",
+    Placeholder = "name1, name2",
+    Default = "",
+    Finished = true,
+    Callback = function(Text)
+        Settings.BlacklistedPlayers = {}
+        for name in string.gmatch(Text or "", "[^,%s]+") do
+            Settings.BlacklistedPlayers[name] = true
+        end
+        if next(Settings.BlacklistedPlayers) then
+            Library:Notify({ Title = "Blacklist", Description = "Exempting: " .. Text, Time = 3 })
+        end
+    end,
+})
+
+for _, teamName in ipairs({ "Guards", "Prisoners", "Criminals" }) do
+    KillBox:AddToggle("KillBl" .. teamName, {
+        Text = "Blacklist " .. teamName .. " team",
+        Default = false,
+        Callback = function(v) Settings.BlacklistedTeams[teamName] = v end,
+    })
+end
+
+task.spawn(function()
+    while task.wait(0.1) do
+        if Library.Unloaded then break end
+        if not Settings.Enabled then continue end
+
+        for _, v in ipairs(Players:GetPlayers()) do
+            if not Settings.Enabled then break end
+
+            pcall(function()
+                if v == localPlayer then return end
+                if Settings.BlacklistedPlayers[v.Name] then return end
+                if Settings.BlacklistedTeams[getTeamName(v)] then return end
+
+                local targetChar = v.Character
+                if not targetChar then return end
+
+                local targetHRP = targetChar:FindFirstChild("HumanoidRootPart")
+                local targetHumanoid = targetChar:FindFirstChildOfClass("Humanoid")
+
+                if not targetHRP then return end
+                if targetChar:FindFirstChildOfClass("ForceField") then return end
+                if not targetHumanoid or targetHumanoid.Health <= 0 then return end
+
+                while Settings.Enabled and targetHumanoid.Health > 0
+                    and not targetChar:FindFirstChildOfClass("ForceField") do
+                    task.wait()
+
+                    moveToTarget(targetHRP)
+
+                    for _, c in ipairs(Players:GetPlayers()) do
+                        if c ~= localPlayer
+                            and not Settings.BlacklistedPlayers[c.Name]
+                            and not Settings.BlacklistedTeams[getTeamName(c)] then
+                            ReplicatedStorage.meleeEvent:FireServer(c)
+                        end
+                    end
+                end
+            end)
+
+            task.wait(Settings.DelayPerPlayer)
+        end
+    end
+end)
+
+--------------------------------------------------
+-- Weapons Tab
+--------------------------------------------------
+local GuardBox = Tabs.Weapons:AddLeftGroupbox("Guards Room")
+local CrimBox = Tabs.Weapons:AddRightGroupbox("Criminals")
+
+local function tpAndBack(pos)
+    local hrp = getRoot()
+    if not hrp then return end
+    local oldPos = hrp.CFrame
+    hrp.CFrame = CFrame.new(pos)
+    task.wait(2)
+    hrp.CFrame = oldPos
+end
+
+local guardWeapons = {
+    { "Tp to MP5", Vector3.new(814.1622924804688, 102.8799819946289, 2229.063232421875) },
+    { "Tp to Remington 870", Vector3.new(820.2584838867188, 102.8799819946289, 2229.033447265625) },
+    { "Tp to Riot Shield [GamePass]", Vector3.new(841.4751586914062, 102.12140655517578, 2230.52880859375) },
+    { "Tp to M4A1 [GamePass]", Vector3.new(847.034912109375, 102.88017272949219, 2228.777587890625) },
+}
+
+local crimWeapons = {
+    { "Tp to Remington 870", Vector3.new(-939.0526123046875, 96.30850219726562, 2039.330810546875) },
+    { "Tp to AK-47", Vector3.new(-931.7821044921875, 96.368408203125, 2039.4932861328125) },
+    { "Tp to M700 [GamePass]", Vector3.new(-919.5140991210938, 96.86885070800781, 2036.7769775390625) },
+    { "Tp to FAL [GamePass]", Vector3.new(-902.1759033203125, 96.43677520751953, 2046.9830322265625) },
+    { "Tp to C4 [GamePass]", Vector3.new(-900.9798583984375, 96.82874298095703, 2041.475830078125) },
+    { "Tp to Revolver [GamePass]", Vector3.new(-915.18896484375, 96.82882690429688, 2035.864013671875) },
+}
+
+for _, w in ipairs(guardWeapons) do
+    GuardBox:AddButton({ Text = w[1], Func = function() tpAndBack(w[2]) end })
+end
+
+for _, w in ipairs(crimWeapons) do
+    CrimBox:AddButton({ Text = w[1], Func = function() tpAndBack(w[2]) end })
+end
+
+--------------------------------------------------
+-- ESP Tab
+--------------------------------------------------
+local ESPNameEnabled = false
+local ESPTeamEnabled = false
+local ESPDistanceEnabled = false
+
+local ESPObjects = {}
+
+local function GetTeamColor(plr)
+    local teamName = plr.Team and plr.Team.Name or ""
+
+    if teamName == "Guards" or teamName == "Police" then
+        return Color3.fromRGB(0, 170, 255)
+    elseif teamName == "Inmates" or teamName == "Prisoners" then
+        return Color3.fromRGB(255, 170, 0)
+    elseif teamName == "Criminals" then
+        return Color3.fromRGB(255, 0, 0)
+    end
+
+    return Color3.fromRGB(255, 255, 255)
+end
+
+local function removeESP(plr)
+    local data = ESPObjects[plr]
+    if data then
+        if data.billboard then data.billboard:Destroy() end
+        ESPObjects[plr] = nil
+    end
+end
+
+local function setupESP(plr, character)
+    local head = character:WaitForChild("Head", 5)
+    if not head then return end
+
+    removeESP(plr)
+
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name = "ESPLabel"
+    billboard.Size = UDim2.new(0, 200, 0, 80)
+    billboard.AlwaysOnTop = true
+    billboard.StudsOffset = Vector3.new(0, 2.5, 0)
+    billboard.Parent = head
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.fromScale(1, 1)
+    label.BackgroundTransparency = 1
+    label.TextScaled = true
+    label.Font = Enum.Font.SourceSansBold
+    label.TextStrokeTransparency = 0
+    label.Parent = billboard
+
+    ESPObjects[plr] = { billboard = billboard, label = label, character = character }
+end
+
+local function createESP(plr)
+    if plr == localPlayer then return end
+
+    if plr.Character then
+        task.spawn(setupESP, plr, plr.Character)
+    end
+    track(plr.CharacterAdded:Connect(function(char)
+        setupESP(plr, char)
+    end))
+end
+
+for _, plr in ipairs(Players:GetPlayers()) do
+    createESP(plr)
+end
+
+track(Players.PlayerAdded:Connect(createESP))
+track(Players.PlayerRemoving:Connect(removeESP))
+
+-- Single update loop for every ESP label
+track(RunService.RenderStepped:Connect(function()
+    local myRoot = getRoot()
+    if not myRoot then return end
+
+    for plr, data in pairs(ESPObjects) do
+        if data.billboard and data.billboard.Parent then
+            local targetRoot = data.character:FindFirstChild("HumanoidRootPart")
+            if targetRoot then
+                local distance = math.floor((myRoot.Position - targetRoot.Position).Magnitude)
+                local teamName = plr.Team and plr.Team.Name or "Unknown"
+                local lines = {}
+
+                if ESPNameEnabled then table.insert(lines, plr.Name) end
+                if ESPTeamEnabled then table.insert(lines, "[" .. teamName .. "]") end
+                if ESPDistanceEnabled then table.insert(lines, "[" .. distance .. "m]") end
+
+                data.label.Text = table.concat(lines, "\n")
+                data.label.TextColor3 = GetTeamColor(plr)
+            end
+        end
+    end
+end))
+
+local EspBox = Tabs.ESP:AddLeftGroupbox("ESP")
+
+EspBox:AddToggle("ESPName", {
+    Text = "Enable ESP name",
+    Default = false,
+    Callback = function(v) ESPNameEnabled = v end,
+})
+
+EspBox:AddToggle("ESPTeam", {
+    Text = "Enable ESP team",
+    Default = false,
+    Callback = function(v) ESPTeamEnabled = v end,
+})
+
+EspBox:AddToggle("ESPDistance", {
+    Text = "Enable ESP distance",
+    Default = false,
+    Callback = function(v) ESPDistanceEnabled = v end,
+})
+
+--------------------------------------------------
+-- Credits Tab
+--------------------------------------------------
+local CreditsBox = Tabs.Credits:AddLeftGroupbox("Credits")
+
+CreditsBox:AddLabel("YukiScripts -- Me", true)
+CreditsBox:AddLabel("And much more scripters lol", true)
+
+--------------------------------------------------
+-- UI Settings
+--------------------------------------------------
+local MenuGroup = Tabs.Settings:AddLeftGroupbox("Menu")
+
+MenuGroup:AddToggle("KeybindMenuOpen", {
+    Default = Library.KeybindFrame.Visible,
+    Text = "Open keybind menu",
+    Callback = function(v)
+        Library.KeybindFrame.Visible = v
+    end,
+})
+
+MenuGroup:AddToggle("ShowCustomCursor", {
+    Text = "Custom cursor",
+    Default = true,
+    Callback = function(v)
+        Library.ShowCustomCursor = v
+    end,
+})
+
+MenuGroup:AddDivider()
+
+MenuGroup:AddLabel("Menu bind"):AddKeyPicker("MenuKeybind", {
+    Default = "RightShift",
+    NoUI = true,
+    Text = "Menu keybind",
+})
+
+MenuGroup:AddButton("Unload", function()
+    Library:Unload()
+end)
+
+Library.ToggleKeybind = Library.Options.MenuKeybind
+
+Library:OnUnload(function()
+    for _, conn in ipairs(connections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    for plr in pairs(ESPObjects) do
+        removeESP(plr)
+    end
+    if fovCircle then
+        pcall(function() fovCircle:Remove() end)
+    end
+    Settings.Enabled = false
+    AutoArrestEnabled = false
+end)
+
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({ "MenuKeybind" })
+ThemeManager:SetFolder("PrisonLife")
+SaveManager:SetFolder("PrisonLife/configs")
+SaveManager:BuildConfigSection(Tabs.Settings)
+ThemeManager:ApplyToTab(Tabs.Settings)
+SaveManager:LoadAutoloadConfig()
